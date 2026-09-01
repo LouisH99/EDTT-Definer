@@ -2,7 +2,7 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.2**.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.2.1**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
@@ -10,7 +10,7 @@ EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot t
 
 ### Prebuilt Windows release
 
-Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.2.exe` from its **Assets** section, and run it. No installation is required.
+Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.2.1.exe` from its **Assets** section, and run it. No installation is required.
 
 The executable is not code-signed, so Windows SmartScreen may show its normal warning on first launch.
 
@@ -55,6 +55,8 @@ Each stage offers three altitude modes: no restriction, a maximum height, or a t
 
 New races start with `MaxShipSize=N/A`. Their initial stages and newly added waypoints start in Maximum height mode with altitude locking enabled; enter the intended maximum before exporting, or select a different altitude mode.
 
+When a waypoint uses Maximum height, the next waypoint added after it inherits the same maximum. Changing that new waypoint's maximum changes what the following waypoint inherits. Target and No restriction modes are not converted into inherited maximums.
+
 ### Calculated gates from live heading
 
 The editor can calculate a gate perpendicular to the ship or SRV's live heading:
@@ -98,7 +100,7 @@ After installation, the application can also be started with `edtt-definer` from
 .\build.ps1
 ```
 
-The unsigned v0.2 executable is written to `dist\EDTT-Definer-v0.2.exe`.
+The unsigned v0.2.1 executable is written to `dist\EDTT-Definer-v0.2.1.exe`.
 
 See [RELEASING.md](RELEASING.md) for the GitHub release checklist and [CHANGELOG.md](CHANGELOG.md) for release notes.
 

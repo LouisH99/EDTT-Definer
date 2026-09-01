@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.1 — 2026-09-01
+
+- New waypoints inherit the previous waypoint's Maximum height value, including when using Capture + add. A changed maximum becomes the default for the following waypoint.
+
 ## v0.2 — 2026-09-01
 
 - Add editor-only waypoint names that remain attached when waypoints are moved or duplicated.

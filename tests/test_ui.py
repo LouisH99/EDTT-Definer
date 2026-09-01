@@ -11,9 +11,13 @@ from edtt_definer.live import LiveResult, LiveState, LocationSnapshot
 from edtt_definer.model import SectionType
 from edtt_definer.parser import parse_text
 from edtt_definer.project import AltitudeMode, ProjectData, StageMetadata, save_project
-from edtt_definer.ui import MainWindow
+from edtt_definer.ui import APP_DISPLAY_NAME, MainWindow
 
 from .test_parser import SAMPLE, WRAPPED_SAMPLE
+
+
+def test_patch_release_version_is_visible() -> None:
+    assert APP_DISPLAY_NAME == "EDTT Definer v0.2.1"
 
 
 def test_new_course_uses_authoring_defaults(qtbot) -> None:
@@ -33,6 +37,88 @@ def test_new_course_uses_authoring_defaults(qtbot) -> None:
     added = window.add_waypoint()
     assert window.project.stage_metadata[added.node_id].altitude_mode is AltitudeMode.MAXIMUM
     assert window.project.stage_metadata[added.node_id].altitude_locked
+    window.dirty = False
+
+
+def test_new_waypoints_inherit_previous_maximum_height(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    first = window.project.document.waypoints[0].section
+    window.refresh_navigation(first.node_id)
+    window.stage_form.maximum_altitude.setText("500")
+
+    second = window.add_waypoint()
+    second_metadata = window.project.stage_metadata[second.node_id]
+    assert second_metadata.altitude_mode is AltitudeMode.MAXIMUM
+    assert second_metadata.maximum_altitude == "500"
+    assert second_metadata.altitude_locked
+    assert second.value("Altitude") == "250"
+    assert second.value("AltitudeProximity") == "250"
+
+    window.stage_form.maximum_altitude.setText("750")
+    third = window.add_waypoint()
+    assert window.project.stage_metadata[third.node_id].maximum_altitude == "750"
+    assert third.value("Altitude") == "375"
+    assert third.value("AltitudeProximity") == "375"
+
+    target_index = window.stage_form.altitude_mode.findData(AltitudeMode.TARGET.value)
+    window.stage_form.altitude_mode.setCurrentIndex(target_index)
+    fourth = window.add_waypoint()
+    assert window.project.stage_metadata[fourth.node_id].altitude_mode is AltitudeMode.MAXIMUM
+    assert window.project.stage_metadata[fourth.node_id].maximum_altitude == ""
+    assert fourth.value("Altitude") == ""
+    assert fourth.value("AltitudeProximity") == ""
+    window.dirty = False
+
+
+def test_capture_and_add_inherits_previous_maximum_height(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    first = window.project.document.waypoints[0].section
+    window.refresh_navigation(first.node_id)
+    window.stage_form.maximum_altitude.setText("500")
+    window.live_result = LiveResult(
+        LiveState.LIVE,
+        LocationSnapshot(
+            system="Sol",
+            body="Earth",
+            latitude=Decimal("1.25"),
+            longitude=Decimal("2.5"),
+            altitude=Decimal("999"),
+            flags=1 << 21,
+            flag_has_lat_long=True,
+        ),
+        "ready",
+    )
+
+    window.capture_and_add()
+    added = window.project.document.waypoints[-1].section
+
+    assert added.value("Position") == "1.25,2.5"
+    assert added.value("Altitude") == "250"
+    assert added.value("AltitudeProximity") == "250"
+    assert window.project.stage_metadata[added.node_id].maximum_altitude == "500"
+    assert window.project.stage_metadata[added.node_id].altitude_locked
+    window.dirty = False
+
+
+def test_new_waypoint_inherits_maximum_inferred_from_import(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    document = parse_text(SAMPLE)
+    previous = document.waypoints[0].section
+    previous.set_value("Altitude", "125")
+    previous.set_value("AltitudeProximity", "125")
+    window._set_project(ProjectData(document=document), None, dirty=False)
+
+    added = window.add_waypoint()
+
+    assert window.project.stage_metadata[added.node_id].maximum_altitude == "250"
+    assert added.value("Altitude") == "125"
+    assert added.value("AltitudeProximity") == "125"
     window.dirty = False
 
 

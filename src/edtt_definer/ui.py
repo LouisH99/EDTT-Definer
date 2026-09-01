@@ -65,7 +65,8 @@ from .validator import KNOWN_FIELDS, Severity, ValidationIssue, has_errors, vali
 
 APP_NAME = "EDTT Definer"
 SETTINGS_APP_NAME = "Elite Dangerous Time Trial Creator"
-DISPLAY_VERSION = ".".join(__version__.split(".")[:2])
+_version_parts = __version__.split(".")
+DISPLAY_VERSION = ".".join(_version_parts[:2] if _version_parts[2:] == ["0"] else _version_parts)
 APP_DISPLAY_NAME = f"{APP_NAME} v{DISPLAY_VERSION}"
 PLAYER_STATES = [
     "Ship", "ShipFlyingStart", "ShipPass", "FighterFlyingStart", "Fighter", "SRV", "OnFoot",
@@ -1310,10 +1311,17 @@ class MainWindow(QMainWindow):
         return mapping.get(race_type, "ShipPass")
 
     def add_waypoint(self) -> SectionNode:
+        previous = self.project.document.waypoints[-1].section if self.project.document.waypoints else None
         section = self.project.document.add_waypoint(self._default_waypoint_state())
-        self.project.stage_metadata[section.node_id] = StageMetadata(
+        metadata = StageMetadata(
             altitude_mode=AltitudeMode.MAXIMUM,
         )
+        if previous is not None:
+            previous_metadata = self.project.stage_metadata.get(previous.node_id, StageMetadata())
+            if inferred_altitude_mode(previous, previous_metadata) is AltitudeMode.MAXIMUM:
+                metadata.maximum_altitude = inferred_maximum_altitude(previous, previous_metadata)
+                apply_maximum_altitude(section, metadata.maximum_altitude)
+        self.project.stage_metadata[section.node_id] = metadata
         self.dirty = True
         self.refresh_navigation(section.node_id)
         self.refresh_validation_and_preview()
