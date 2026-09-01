@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from edtt_definer.model import EventDocument, SectionType
 from edtt_definer.parser import parse_text
-from edtt_definer.validator import Severity, validate_document
+from edtt_definer.project import AltitudeMode, ProjectData, StageMetadata
+from edtt_definer.validator import Severity, validate_document, validate_project
 
 from .test_parser import SAMPLE, WRAPPED_SAMPLE
 
@@ -16,9 +17,19 @@ def test_complete_sample_has_no_errors() -> None:
 
 
 def test_new_document_is_a_saveable_draft_but_not_exportable() -> None:
-    messages = errors(EventDocument.new())
+    document = EventDocument.new()
+    messages = errors(document)
     assert any("EventRef" in message for message in messages)
     assert any("position" in message.lower() for message in messages)
+    assert document.event_info.get("MaxShipSize") == "N/A"
+
+
+def test_empty_max_ship_size_has_no_warning() -> None:
+    document = parse_text(SAMPLE)
+    document.event_info.set("MaxShipSize", "")
+    messages = [issue.message for issue in validate_document(document)]
+
+    assert "MaxShipSize is not set." not in messages
 
 
 def test_flying_start_requires_matching_first_waypoint() -> None:
@@ -133,3 +144,54 @@ def test_speed_rule_fields_and_navigation_instructions_are_recognized() -> None:
 
     waypoint.set_value("MaxSpeedWarningDistance", "far")
     assert any("comma-separated list" in message for message in errors(document))
+
+
+def test_invalid_maximum_height_blocks_project_export() -> None:
+    document = parse_text(SAMPLE)
+    waypoint = document.waypoints[0].section
+    project = ProjectData(document=document)
+    project.stage_metadata[waypoint.node_id] = StageMetadata(
+        altitude_mode=AltitudeMode.MAXIMUM,
+        maximum_altitude="not a number",
+    )
+
+    messages = [
+        issue.message
+        for issue in validate_project(project)
+        if issue.severity is Severity.ERROR
+    ]
+
+    assert any("Maximum height must be numeric" in message for message in messages)
+
+    project.stage_metadata[waypoint.node_id].maximum_altitude = ""
+    messages = [
+        issue.message
+        for issue in validate_project(project)
+        if issue.severity is Severity.ERROR
+    ]
+    assert any("Maximum height is required" in message for message in messages)
+
+    project.stage_metadata[waypoint.node_id].maximum_altitude = "0"
+    messages = [
+        issue.message
+        for issue in validate_project(project)
+        if issue.severity is Severity.ERROR
+    ]
+    assert any("Maximum height must be greater than zero" in message for message in messages)
+
+
+def test_explicit_target_mode_overrides_equal_pair_detection() -> None:
+    document = parse_text(SAMPLE)
+    waypoint = document.waypoints[0].section
+    waypoint.set_value("Altitude", "250")
+    waypoint.set_value("AltitudeProximity", "250")
+    project = ProjectData(document=document)
+    project.stage_metadata[waypoint.node_id] = StageMetadata(
+        altitude_mode=AltitudeMode.TARGET,
+    )
+
+    assert not [
+        issue
+        for issue in validate_project(project)
+        if issue.severity is Severity.ERROR and "Maximum height" in issue.message
+    ]

@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from edtt_definer.model import Position, SectionType
 from edtt_definer.parser import load_document, parse_text, save_document, serialize_document
-from edtt_definer.project import ProjectData, load_project, save_project
+from edtt_definer.project import (
+    AltitudeMode,
+    ProjectData,
+    StageMetadata,
+    apply_maximum_altitude,
+    inferred_altitude_mode,
+    inferred_maximum_altitude,
+    load_project,
+    save_project,
+)
 
 
 SAMPLE = (
@@ -88,6 +98,23 @@ def test_unchanged_round_trip_is_exact() -> None:
     assert serialize_document(document) == SAMPLE
 
 
+def test_new_project_defaults_max_ship_size_and_altitude_modes() -> None:
+    project = ProjectData.new()
+
+    assert project.document.event_info.get("MaxShipSize") == "N/A"
+    stages = (
+        project.document.sections(SectionType.START)
+        + project.document.sections(SectionType.WAYPOINT)
+        + project.document.sections(SectionType.END)
+    )
+    assert stages
+    assert all(
+        project.stage_metadata[section.node_id].altitude_mode is AltitudeMode.MAXIMUM
+        for section in stages
+    )
+    assert all(project.stage_metadata[section.node_id].altitude_locked for section in stages)
+
+
 def test_edit_only_changes_targeted_field() -> None:
     document = parse_text(SAMPLE)
     original_event_ref = next(
@@ -112,13 +139,73 @@ def test_utf8_bom_and_newlines_are_preserved(tmp_path: Path) -> None:
 
 
 def test_project_round_trip_preserves_ast_and_metadata(tmp_path: Path) -> None:
-    project = ProjectData(parse_text(SAMPLE), {"abc": {"heading": "90"}}, "race.export.txt")
+    document = parse_text(SAMPLE)
+    waypoint_id = document.waypoints[0].section.node_id
+    project = ProjectData(
+        document,
+        {"abc": {"heading": "90"}},
+        "race.export.txt",
+        {
+            waypoint_id: StageMetadata(
+                "Canyon Gate", AltitudeMode.MAXIMUM, "500", True
+            )
+        },
+    )
     path = tmp_path / "race.edttc.json"
     save_project(project, path)
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 2
     loaded = load_project(path)
     assert serialize_document(loaded.document) == SAMPLE
     assert loaded.capture_metadata["abc"]["heading"] == "90"
     assert loaded.last_export_path == "race.export.txt"
+    assert loaded.stage_metadata[waypoint_id].display_name == "Canyon Gate"
+    assert loaded.stage_metadata[waypoint_id].altitude_mode is AltitudeMode.MAXIMUM
+    assert loaded.stage_metadata[waypoint_id].maximum_altitude == "500"
+    assert loaded.stage_metadata[waypoint_id].altitude_locked
+
+
+def test_version_one_project_migrates_with_altitude_locked(tmp_path: Path) -> None:
+    project = ProjectData(parse_text(SAMPLE))
+    payload = project.to_dict()
+    payload["schema_version"] = 1
+    payload.pop("stage_metadata")
+    path = tmp_path / "legacy.edttc.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_project(path)
+    waypoint = loaded.document.waypoints[0].section
+
+    assert loaded.stage_metadata == {}
+    assert loaded.metadata_for(waypoint.node_id).altitude_locked
+
+
+def test_maximum_altitude_helpers_preserve_decimal_values() -> None:
+    document = parse_text(SAMPLE)
+    waypoint = document.waypoints[0].section
+    metadata = StageMetadata()
+
+    assert inferred_altitude_mode(waypoint, metadata) is AltitudeMode.NONE
+    assert apply_maximum_altitude(waypoint, "501")
+    assert waypoint.value("Altitude") == "250.5"
+    assert waypoint.value("AltitudeProximity") == "250.5"
+    assert inferred_altitude_mode(waypoint, metadata) is AltitudeMode.MAXIMUM
+    assert inferred_maximum_altitude(waypoint, metadata) == "501.0"
+
+
+def test_equal_imported_altitudes_are_detected_without_rewriting() -> None:
+    source = SAMPLE.replace(
+        "NextInstruction=Terse:Turn left.\r\n",
+        "Altitude=250.0      <!-- target note\r\n"
+        "AltitudeProximity=250.00      <!-- tolerance note\r\n"
+        "NextInstruction=Terse:Turn left.\r\n",
+    )
+    document = parse_text(source)
+    waypoint = document.waypoints[0].section
+
+    assert inferred_altitude_mode(waypoint, StageMetadata()) is AltitudeMode.MAXIMUM
+    assert inferred_maximum_altitude(waypoint, StageMetadata()) == "500.00"
+    assert apply_maximum_altitude(waypoint, "500.00")
+    assert serialize_document(document) == source
 
 
 def test_position_point_and_gate_preserve_decimal_text() -> None:

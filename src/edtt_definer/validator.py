@@ -6,6 +6,14 @@ from decimal import Decimal, InvalidOperation
 from enum import Enum
 
 from .model import EntryKind, EventDocument, Position, RawNode, SectionNode, SectionType
+from .project import (
+    AltitudeMode,
+    ProjectData,
+    StageMetadata,
+    decimal_value,
+    inferred_altitude_mode,
+    inferred_maximum_altitude,
+)
 
 
 class Severity(str, Enum):
@@ -320,9 +328,7 @@ def validate_document(document: EventDocument) -> list[ValidationIssue]:
             if value and value not in allowed:
                 _issue(issues, Severity.ERROR, f"Unsupported {key}: {value}", section, key)
         ship_size = section.value("MaxShipSize")
-        if not ship_size:
-            _issue(issues, Severity.WARNING, "MaxShipSize is not set.", section, "MaxShipSize")
-        elif ship_size not in SHIP_SIZES:
+        if ship_size and ship_size not in SHIP_SIZES:
             _issue(
                 issues,
                 Severity.ERROR,
@@ -388,6 +394,42 @@ def validate_document(document: EventDocument) -> list[ValidationIssue]:
             original,
         )
 
+    return issues
+
+
+def validate_project(project: ProjectData) -> list[ValidationIssue]:
+    issues = validate_document(project.document)
+    stages = (
+        project.document.sections(SectionType.START)
+        + project.document.sections(SectionType.WAYPOINT)
+        + project.document.sections(SectionType.END)
+    )
+    for section in stages:
+        metadata = project.stage_metadata.get(section.node_id, StageMetadata())
+        if inferred_altitude_mode(section, metadata) is not AltitudeMode.MAXIMUM:
+            continue
+        maximum_text = inferred_maximum_altitude(section, metadata)
+        if not maximum_text.strip():
+            _issue(issues, Severity.ERROR, "Maximum height is required.", section, "MaximumAltitude")
+            continue
+        maximum = decimal_value(maximum_text)
+        if maximum is None:
+            _issue(issues, Severity.ERROR, "Maximum height must be numeric.", section, "MaximumAltitude")
+            continue
+        if maximum <= 0:
+            _issue(issues, Severity.ERROR, "Maximum height must be greater than zero.", section, "MaximumAltitude")
+            continue
+        expected = maximum / Decimal("2")
+        altitude = decimal_value(section.value("Altitude"))
+        tolerance = decimal_value(section.value("AltitudeProximity"))
+        if altitude != expected or tolerance != expected:
+            _issue(
+                issues,
+                Severity.ERROR,
+                "Maximum height is not synchronized with Altitude and AltitudeProximity.",
+                section,
+                "MaximumAltitude",
+            )
     return issues
 
 

@@ -307,7 +307,12 @@ class EventDocument:
                 RawNode(""),
                 section(
                     "eventinfo",
-                    [("EventState", "AUTHOR"), ("GameType", "BOTH"), ("RaceType", "SHIP")],
+                    [
+                        ("EventState", "AUTHOR"),
+                        ("MaxShipSize", "N/A"),
+                        ("GameType", "BOTH"),
+                        ("RaceType", "SHIP"),
+                    ],
                 ),
                 RawNode(""),
                 section("start", [("PlayerState", "Ship")]),

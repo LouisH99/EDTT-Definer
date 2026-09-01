@@ -2,7 +2,7 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.1**.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.2**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
@@ -10,7 +10,7 @@ EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot t
 
 ### Prebuilt Windows release
 
-Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.1.exe` from its **Assets** section, and run it. No installation is required.
+Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.2.exe` from its **Assets** section, and run it. No installation is required.
 
 The executable is not code-signed, so Windows SmartScreen may show its normal warning on first launch.
 
@@ -45,7 +45,15 @@ Python 3.13 is required. Using a virtual environment is recommended because it k
 6. Resolve all red validation errors and choose **Create EDCoPilot TXT**.
 7. Import the resulting `*.export.txt` through EDCoPilot's Time Trials page.
 
-For a manually captured gate, choose **Gate** in the position editor and capture endpoint A and endpoint B separately. Captured altitude is filled exactly as reported; the app intentionally does not invent a proximity or altitude tolerance.
+For a manually captured gate, choose **Gate** in the position editor and capture endpoint A and endpoint B separately. Altitude is locked against live capture by default, so capturing point B does not replace the rule chosen at point A. Unlock it when live altitude should update a target; the app intentionally does not invent an altitude tolerance.
+
+### Waypoint names and altitude rules
+
+Waypoints can have optional editor-only names, displayed as labels such as `Waypoint 3 — Canyon Gate`. Names are stored in the editable `*.edttc.json` project and are not written to EDCoPilot TXT files.
+
+Each stage offers three altitude modes: no restriction, a maximum height, or a target altitude with a tolerance. Maximum height is an authoring shortcut: a maximum of `500` metres is exported as `Altitude=250` and `AltitudeProximity=250`, representing the permitted range from zero through 500 metres. Maximum-height values are always manual and are never replaced by live capture.
+
+New races start with `MaxShipSize=N/A`. Their initial stages and newly added waypoints start in Maximum height mode with altitude locking enabled; enter the intended maximum before exporting, or select a different altitude mode.
 
 ### Calculated gates from live heading
 
@@ -90,7 +98,7 @@ After installation, the application can also be started with `edtt-definer` from
 .\build.ps1
 ```
 
-The unsigned v0.1 executable is written to `dist\EDTT-Definer-v0.1.exe`.
+The unsigned v0.2 executable is written to `dist\EDTT-Definer-v0.2.exe`.
 
 See [RELEASING.md](RELEASING.md) for the GitHub release checklist and [CHANGELOG.md](CHANGELOG.md) for release notes.
 

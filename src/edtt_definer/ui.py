@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable
@@ -48,8 +49,18 @@ from .model import (
     Stage,
 )
 from .parser import _entry_from_line, load_document, save_document, serialize_document
-from .project import ProjectData, load_project, save_project
-from .validator import KNOWN_FIELDS, Severity, ValidationIssue, has_errors, validate_document
+from .project import (
+    AltitudeMode,
+    ProjectData,
+    StageMetadata,
+    apply_maximum_altitude,
+    decimal_value,
+    inferred_altitude_mode,
+    inferred_maximum_altitude,
+    load_project,
+    save_project,
+)
+from .validator import KNOWN_FIELDS, Severity, ValidationIssue, has_errors, validate_project
 
 
 APP_NAME = "EDTT Definer"
@@ -483,6 +494,7 @@ class EventInfoForm(QWidget):
 
 class StageForm(QWidget):
     changed = Signal()
+    metadata_changed = Signal()
     capture_a_requested = Signal()
     capture_b_requested = Signal()
     calculate_gate_requested = Signal()
@@ -491,10 +503,13 @@ class StageForm(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.section: SectionNode | None = None
+        self.metadata = StageMetadata()
         self.loading = False
         self.position_touched = False
         self.title = QLabel("Stage")
         self.title.setObjectName("sectionTitle")
+        self.waypoint_name = QLineEdit()
+        self.waypoint_name.setPlaceholderText("Optional name used only inside EDTT Definer")
         self.player_state = _editable_combo(PLAYER_STATES)
         self.system = QLineEdit()
         self.body = QLineEdit()
@@ -511,6 +526,14 @@ class StageForm(QWidget):
         self.proximity = QLineEdit()
         self.altitude = QLineEdit()
         self.altitude_proximity = QLineEdit()
+        self.altitude_mode = QComboBox()
+        self.altitude_mode.addItem("No altitude restriction", AltitudeMode.NONE.value)
+        self.altitude_mode.addItem("Maximum height", AltitudeMode.MAXIMUM.value)
+        self.altitude_mode.addItem("Target altitude ± tolerance", AltitudeMode.TARGET.value)
+        self.maximum_altitude = QLineEdit()
+        self.maximum_altitude.setPlaceholderText("Maximum height above the surface")
+        self.altitude_locked = QCheckBox("Lock altitude during live capture")
+        self.altitude_locked.setChecked(True)
         self.start_orientation_instructions = InstructionEditor()
         self.start_instructions = InstructionEditor()
         self.next_instructions = InstructionEditor()
@@ -562,14 +585,30 @@ class StageForm(QWidget):
         self.gate_forward_offset.setToolTip("0 centers the gate on the live position; a positive value places it ahead along the live heading.")
 
         form = QFormLayout()
+        self.waypoint_name_label = QLabel("Waypoint name (editor only)")
+        form.addRow(self.waypoint_name_label, self.waypoint_name)
         form.addRow("Player state*", self.player_state)
         form.addRow("System", self.system)
         form.addRow("Body", self.body)
         form.addRow("Body radius (km)", self.body_radius)
         form.addRow("Station", self.station)
         form.addRow("Proximity (m)", self.proximity)
-        form.addRow("Altitude (m)", self.altitude)
-        form.addRow("Altitude tolerance (m)", self.altitude_proximity)
+        self.altitude_box = QGroupBox("Altitude rule")
+        altitude_form = QFormLayout(self.altitude_box)
+        altitude_form.addRow("Mode", self.altitude_mode)
+        self.maximum_altitude_label = QLabel("Maximum height (m)")
+        altitude_form.addRow(self.maximum_altitude_label, self.maximum_altitude)
+        self.altitude_label = QLabel("Target altitude (m)")
+        altitude_form.addRow(self.altitude_label, self.altitude)
+        self.altitude_proximity_label = QLabel("Tolerance (m)")
+        altitude_form.addRow(self.altitude_proximity_label, self.altitude_proximity)
+        altitude_form.addRow(self.altitude_locked)
+        self.altitude_locked.setToolTip(
+            "When enabled, live position and gate captures keep the stage's existing altitude rule."
+        )
+        self.maximum_altitude.setToolTip(
+            "EDCoPilot receives half this value as Altitude and half as AltitudeProximity."
+        )
         navigation_box = QGroupBox("Travel instructions")
         navigation_form = QFormLayout(navigation_box)
         navigation_form.addRow("Enter system", self.enter_system_instruction)
@@ -601,6 +640,7 @@ class StageForm(QWidget):
         layout.addWidget(self.title)
         layout.addLayout(form)
         layout.addWidget(position_box)
+        layout.addWidget(self.altitude_box)
         layout.addWidget(navigation_box)
         layout.addWidget(self.start_orientation_box)
         layout.addWidget(self.start_instructions_box)
@@ -613,10 +653,13 @@ class StageForm(QWidget):
 
         for widget in (
             self.system, self.body, self.body_radius, self.station, self.proximity,
-            self.altitude, self.altitude_proximity, self.max_speed,
+            self.altitude, self.altitude_proximity, self.maximum_altitude, self.max_speed,
             self.max_speed_warning_distance, self.max_speed_warning_trigger,
         ):
             widget.textChanged.connect(self._emit_changed)
+        self.waypoint_name.textChanged.connect(self._emit_metadata_changed)
+        self.altitude_locked.toggled.connect(self._emit_metadata_changed)
+        self.altitude_mode.currentIndexChanged.connect(self._altitude_mode_changed)
         self.player_state.currentTextChanged.connect(self._emit_changed)
         for editor in (
             self.enter_system_instruction, self.approach_body_instruction,
@@ -638,11 +681,13 @@ class StageForm(QWidget):
         self.gate_width.textChanged.connect(self.gate_parameters_changed)
         self.gate_forward_offset.textChanged.connect(self.gate_parameters_changed)
 
-    def set_section(self, section: SectionNode, label: str) -> None:
+    def set_section(self, section: SectionNode, label: str, metadata: StageMetadata) -> None:
         self.loading = True
         self.position_touched = False
         self.section = section
+        self.metadata = metadata
         self.title.setText(label)
+        self.waypoint_name.setText(metadata.display_name)
         self.player_state.setCurrentText(section.value("PlayerState"))
         self.system.setText(section.value("System"))
         self.body.setText(section.value("Body"))
@@ -657,6 +702,14 @@ class StageForm(QWidget):
         self.proximity.setText(section.value("Proximity"))
         self.altitude.setText(section.value("Altitude"))
         self.altitude_proximity.setText(section.value("AltitudeProximity"))
+        mode = inferred_altitude_mode(section, metadata)
+        mode_index = self.altitude_mode.findData(mode.value)
+        self.altitude_mode.setCurrentIndex(max(mode_index, 0))
+        self._displayed_altitude_mode = mode
+        self.maximum_altitude.setText(
+            inferred_maximum_altitude(section, metadata) if mode is AltitudeMode.MAXIMUM else metadata.maximum_altitude
+        )
+        self.altitude_locked.setChecked(metadata.altitude_locked)
         self.enter_system_instruction.setPlainText(section.value("EnterSystemInstruction"))
         self.approach_body_instruction.setPlainText(section.value("ApproachBodyInstruction"))
         self.last_leg_message.setPlainText(section.value("LastLegMessage"))
@@ -673,6 +726,8 @@ class StageForm(QWidget):
         is_start = section.section_type is SectionType.START
         is_waypoint = section.section_type is SectionType.WAYPOINT
         is_end = section.section_type is SectionType.END
+        self.waypoint_name.setVisible(is_waypoint)
+        self.waypoint_name_label.setVisible(is_waypoint)
         self.start_orientation_box.setVisible(is_start)
         self.start_instructions_box.setVisible(is_start)
         self.next_instructions_box.setVisible(is_start or is_waypoint)
@@ -683,6 +738,7 @@ class StageForm(QWidget):
         known = KNOWN_FIELDS.get(section.name.casefold(), set())
         self.advanced.set_section(section, known)
         self._update_gate_fields(self.position_mode.currentText())
+        self._update_altitude_fields(mode)
         self.position_touched = False
         self.loading = False
 
@@ -696,13 +752,20 @@ class StageForm(QWidget):
             "BodyRadius": self.body_radius.text(),
             "Station": self.station.text(),
             "Proximity": self.proximity.text(),
-            "Altitude": self.altitude.text(),
-            "AltitudeProximity": self.altitude_proximity.text(),
             "EnterSystemInstruction": self.enter_system_instruction.toPlainText().replace("\n", " "),
             "ApproachBodyInstruction": self.approach_body_instruction.toPlainText().replace("\n", " "),
         }
         for key, value in values.items():
             self.section.set_value(key, value)
+        mode = self.current_altitude_mode()
+        if mode is AltitudeMode.NONE:
+            self.section.set_value("Altitude", "")
+            self.section.set_value("AltitudeProximity", "")
+        elif mode is AltitudeMode.MAXIMUM:
+            apply_maximum_altitude(self.section, self.maximum_altitude.text())
+        else:
+            self.section.set_value("Altitude", self.altitude.text())
+            self.section.set_value("AltitudeProximity", self.altitude_proximity.text())
         if self.position_touched:
             self.section.set_value(
                 "Position",
@@ -754,6 +817,63 @@ class StageForm(QWidget):
         self.gate_forward_offset.setText(forward_offset_m)
         del width_blocker, offset_blocker
 
+    def current_altitude_mode(self) -> AltitudeMode:
+        data = self.altitude_mode.currentData()
+        try:
+            return AltitudeMode(str(data))
+        except ValueError:
+            return AltitudeMode.NONE
+
+    def metadata_snapshot(self) -> StageMetadata:
+        return StageMetadata(
+            display_name=self.waypoint_name.text().strip()
+            if self.section and self.section.section_type is SectionType.WAYPOINT
+            else "",
+            altitude_mode=self.current_altitude_mode(),
+            maximum_altitude=self.maximum_altitude.text().strip(),
+            altitude_locked=self.altitude_locked.isChecked(),
+        )
+
+    def _update_altitude_fields(self, mode: AltitudeMode) -> None:
+        maximum = mode is AltitudeMode.MAXIMUM
+        target = mode is AltitudeMode.TARGET
+        self.maximum_altitude_label.setVisible(maximum)
+        self.maximum_altitude.setVisible(maximum)
+        self.altitude_label.setVisible(target)
+        self.altitude.setVisible(target)
+        self.altitude_proximity_label.setVisible(target)
+        self.altitude_proximity.setVisible(target)
+
+    def _altitude_mode_changed(self, *_args) -> None:
+        mode = self.current_altitude_mode()
+        if self.loading:
+            self._update_altitude_fields(mode)
+            self._displayed_altitude_mode = mode
+            return
+        previous = getattr(self, "_displayed_altitude_mode", AltitudeMode.NONE)
+        if mode is AltitudeMode.MAXIMUM and previous is AltitudeMode.TARGET:
+            altitude = decimal_value(self.altitude.text())
+            tolerance = decimal_value(self.altitude_proximity.text())
+            maximum = format(altitude + tolerance, "f") if altitude is not None and tolerance is not None else ""
+            blocker = QSignalBlocker(self.maximum_altitude)
+            self.maximum_altitude.setText(maximum)
+            del blocker
+        elif mode is AltitudeMode.TARGET and previous is AltitudeMode.MAXIMUM:
+            maximum = decimal_value(self.maximum_altitude.text())
+            half = format(maximum / Decimal("2"), "f") if maximum is not None and maximum > 0 else ""
+            altitude_blocker = QSignalBlocker(self.altitude)
+            tolerance_blocker = QSignalBlocker(self.altitude_proximity)
+            self.altitude.setText(half)
+            self.altitude_proximity.setText(half)
+            del altitude_blocker, tolerance_blocker
+        self._displayed_altitude_mode = mode
+        self._update_altitude_fields(mode)
+        self._emit_changed()
+
+    def _emit_metadata_changed(self, *_args) -> None:
+        if not self.loading:
+            self.metadata_changed.emit()
+
     def _position_changed(self, *_args) -> None:
         if not self.loading:
             self.position_touched = True
@@ -780,7 +900,7 @@ class MainWindow(QMainWindow):
         configured_dir = self.settings.value("journal_directory", "", str)
         self.live_reader = LiveLocationReader(configured_dir or None)
         self.live_result = LiveResult(LiveState.MISSING, None, "Waiting for game data.")
-        self.project = ProjectData()
+        self.project = ProjectData.new()
         self.project_path: Path | None = None
         self.dirty = False
         self.current_section_id: str | None = None
@@ -790,7 +910,7 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_ui()
         self._restore_settings()
-        self._set_project(ProjectData(), None, dirty=False)
+        self._set_project(ProjectData.new(), None, dirty=False)
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(750)
         self.poll_timer.timeout.connect(self._poll_live)
@@ -854,6 +974,7 @@ class MainWindow(QMainWindow):
         self.stage_form = StageForm()
         self.event_form.changed.connect(self._document_changed)
         self.stage_form.changed.connect(self._document_changed)
+        self.stage_form.metadata_changed.connect(self._stage_metadata_changed)
         self.stage_form.capture_a_requested.connect(lambda: self.capture_selected("a"))
         self.stage_form.capture_b_requested.connect(lambda: self.capture_selected("b"))
         self.stage_form.calculate_gate_requested.connect(self.calculate_gate_from_live)
@@ -950,7 +1071,10 @@ class MainWindow(QMainWindow):
                 label = "End"
             elif kind is SectionType.WAYPOINT:
                 waypoint_number += 1
+                name = self.project.stage_metadata.get(section.node_id, StageMetadata()).display_name.strip()
                 label = f"Waypoint {waypoint_number}"
+                if name:
+                    label += f" — {name}"
             else:
                 label = f"Unknown: {section.name}"
             item = QListWidgetItem(label)
@@ -977,7 +1101,7 @@ class MainWindow(QMainWindow):
             self.form_stack.setCurrentIndex(0)
         else:
             label = self.navigation.currentItem().text() if self.navigation.currentItem() else section.name.title()
-            self.stage_form.set_section(section, label)
+            self.stage_form.set_section(section, label, self.project.metadata_for(section.node_id))
             gate_metadata = self.project.capture_metadata.get(section.node_id, {}).get("calculated_gate")
             if isinstance(gate_metadata, dict):
                 self.stage_form.set_gate_parameters(
@@ -988,13 +1112,46 @@ class MainWindow(QMainWindow):
         self._update_capture_buttons()
 
     def _document_changed(self) -> None:
+        self._sync_current_stage_metadata()
         self.dirty = True
         self.refresh_validation_and_preview()
         self._update_title()
         self._update_capture_buttons()
 
+    def _sync_current_stage_metadata(self) -> None:
+        section = self.project.document.section_by_id(self.current_section_id or "")
+        if section is None or section.section_type is SectionType.EVENTINFO:
+            return
+        if self.stage_form.section is not section:
+            return
+        self.project.stage_metadata[section.node_id] = self.stage_form.metadata_snapshot()
+
+    def _stage_metadata_changed(self) -> None:
+        self._sync_current_stage_metadata()
+        section = self.project.document.section_by_id(self.current_section_id or "")
+        if section and section.section_type is SectionType.WAYPOINT:
+            item = self.navigation.currentItem()
+            if item:
+                waypoint_number = sum(
+                    1
+                    for row in range(self.navigation.currentRow() + 1)
+                    if self.project.document.section_by_id(
+                        self.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+                    )
+                    and self.project.document.section_by_id(
+                        self.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+                    ).section_type is SectionType.WAYPOINT
+                )
+                name = self.project.stage_metadata[section.node_id].display_name.strip()
+                label = f"Waypoint {waypoint_number}" + (f" — {name}" if name else "")
+                item.setText(label)
+                self.stage_form.title.setText(label)
+        self.dirty = True
+        self.refresh_validation_and_preview()
+        self._update_title()
+
     def refresh_validation_and_preview(self) -> None:
-        issues = validate_document(self.project.document)
+        issues = validate_project(self.project)
         self.validation_list.clear()
         errors = 0
         warnings = 0
@@ -1051,7 +1208,7 @@ class MainWindow(QMainWindow):
 
     def new_project(self) -> None:
         if self._confirm_discard():
-            self._set_project(ProjectData(), None, dirty=False)
+            self._set_project(ProjectData.new(), None, dirty=False)
 
     def open_file(self, path: str | None = None) -> None:
         if not self._confirm_discard():
@@ -1108,7 +1265,7 @@ class MainWindow(QMainWindow):
         return self.save_project()
 
     def export_file(self) -> None:
-        issues = validate_document(self.project.document)
+        issues = validate_project(self.project)
         if has_errors(issues):
             count = sum(issue.severity is Severity.ERROR for issue in issues)
             QMessageBox.warning(
@@ -1154,6 +1311,9 @@ class MainWindow(QMainWindow):
 
     def add_waypoint(self) -> SectionNode:
         section = self.project.document.add_waypoint(self._default_waypoint_state())
+        self.project.stage_metadata[section.node_id] = StageMetadata(
+            altitude_mode=AltitudeMode.MAXIMUM,
+        )
         self.dirty = True
         self.refresh_navigation(section.node_id)
         self.refresh_validation_and_preview()
@@ -1169,6 +1329,14 @@ class MainWindow(QMainWindow):
         if section:
             duplicate = self.project.document.duplicate_waypoint(section.node_id)
             if duplicate:
+                source_metadata = deepcopy(self.project.metadata_for(section.node_id))
+                if source_metadata.display_name.strip():
+                    source_metadata.display_name = f"{source_metadata.display_name.strip()} (copy)"
+                self.project.stage_metadata[duplicate.node_id] = source_metadata
+                if section.node_id in self.project.capture_metadata:
+                    self.project.capture_metadata[duplicate.node_id] = deepcopy(
+                        self.project.capture_metadata[section.node_id]
+                    )
                 self.dirty = True
                 self.refresh_navigation(duplicate.node_id)
                 self.refresh_validation_and_preview()
@@ -1182,6 +1350,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Waypoint required", "A time trial must contain at least one waypoint.")
             return
         if self.project.document.remove_waypoint(section.node_id):
+            self.project.stage_metadata.pop(section.node_id, None)
+            self.project.capture_metadata.pop(section.node_id, None)
             self.dirty = True
             self.current_section_id = None
             self.refresh_navigation()
@@ -1298,8 +1468,7 @@ class MainWindow(QMainWindow):
         stage.set("System", snapshot.system or stage.get("System") or inherited_system)
         stage.set("Body", snapshot.body or stage.get("Body") or inherited_body)
         stage.set("Station", snapshot.station or stage.get("Station") or inherited_station)
-        if snapshot.altitude is not None:
-            stage.set("Altitude", format(snapshot.altitude, "f"))
+        self._apply_live_altitude(section, snapshot)
         metadata = snapshot.to_metadata()
         metadata["calculated_gate"] = {
             "center_latitude": gate.center_latitude,
@@ -1352,13 +1521,25 @@ class MainWindow(QMainWindow):
         stage.set("System", snapshot.system or stage.get("System") or inherited_system)
         stage.set("Body", snapshot.body or stage.get("Body") or inherited_body)
         stage.set("Station", snapshot.station or stage.get("Station") or inherited_station)
-        if snapshot.altitude is not None:
-            stage.set("Altitude", format(snapshot.altitude, "f"))
+        self._apply_live_altitude(section, snapshot)
         self.project.capture_metadata[section.node_id] = snapshot.to_metadata()
         self.dirty = True
         self.refresh_navigation(section.node_id)
         self.refresh_validation_and_preview()
         self._update_title()
+
+    def _apply_live_altitude(self, section: SectionNode, snapshot: LocationSnapshot) -> None:
+        if snapshot.altitude is None:
+            return
+        metadata = self.project.metadata_for(section.node_id)
+        mode = inferred_altitude_mode(section, metadata)
+        if metadata.altitude_locked or mode is AltitudeMode.MAXIMUM:
+            return
+        if mode is AltitudeMode.NONE:
+            metadata.altitude_mode = AltitudeMode.TARGET
+            metadata.maximum_altitude = ""
+            section.set_value("AltitudeProximity", "")
+        section.set_value("Altitude", format(snapshot.altitude, "f"))
 
     def choose_journal_directory(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Choose Elite Dangerous journal folder", str(self.live_reader.journal_directory))

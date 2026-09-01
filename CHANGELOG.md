@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2 — 2026-09-01
+
+- Add editor-only waypoint names that remain attached when waypoints are moved or duplicated.
+- Add No restriction, Maximum height, and Target altitude ± tolerance authoring modes.
+- Default new stages and waypoints to Maximum height mode with altitude locking enabled.
+- Default new races to `MaxShipSize=N/A` while keeping the field editable.
+- Convert maximum height into EDCoPilot's existing Altitude and AltitudeProximity pair without floating-point drift.
+- Detect imported equal altitude/tolerance pairs as maximum-height rules without rewriting unchanged files.
+- Lock altitude against live capture by default, including manual gate endpoints and calculated gates.
+- Upgrade editable projects to schema version 2 while automatically migrating version-1 projects.
+
 ## v0.1 — 2026-08-31
 
 Initial public release.
