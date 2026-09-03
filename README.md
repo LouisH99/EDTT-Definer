@@ -2,7 +2,7 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.3**.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.4**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
@@ -10,7 +10,7 @@ EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot t
 
 ### Prebuilt Windows release
 
-Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.3.exe` from its **Assets** section, and run it. No installation is required.
+Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.4.exe` from its **Assets** section, and run it. No installation is required.
 
 The executable is not code-signed, so Windows SmartScreen may show its normal warning on first launch.
 
@@ -46,6 +46,18 @@ Python 3.13 is required. Using a virtual environment is recommended because it k
 7. Import the resulting `*.export.txt` through EDCoPilot's Time Trials page.
 
 For a manually captured gate, choose **Gate** in the position editor and capture endpoint A and endpoint B separately. Once both endpoints and the body radius are present, the editor displays their great-circle surface distance in metres or kilometres. This measurement is informational and is not added to the EDCoPilot TXT. Altitude is locked against live capture by default, so capturing point B does not replace the rule chosen at point A. Unlock it when live altitude should update a target; the app intentionally does not invent an altitude tolerance.
+
+### Convert a gate to its center point
+
+A complete gate can be changed into one point by choosing **Convert gate to centered point**. EDTT Definer calculates the spherical midpoint of the shorter great-circle path between endpoints A and B, shows the result for confirmation, and then replaces only the stage's `Position`. This works correctly across the ±180° longitude seam and at high latitudes and does not require a body radius.
+
+The existing Proximity value is preserved rather than invented or changed. A converted point must have a positive Proximity before it can be exported. Altitude rules, instructions, conditions, waypoint names, and advanced entries are also preserved. Exactly antipodal endpoints cannot be converted because they do not have one unique spherical midpoint.
+
+### Collapsible sections, themes, and field help
+
+Less frequently used form areas can be collapsed with their arrow headers. **Advanced / unrecognized entries** and **Maximum-speed rule** start closed; **Travel instructions** and **Conditions** start open. The application remembers these choices. A populated section shows an entry count in its header, and a closed section is highlighted if it contains a validation error.
+
+Use **Appearance → Follow Windows**, **Light**, or **Dark** to choose the interface theme. Follow Windows is the default, and an explicit choice is remembered. Hover over an unfamiliar field or button for about two seconds to see a short explanation; the same descriptions are exposed to accessibility tools.
 
 ### Waypoint names and altitude rules
 
@@ -106,7 +118,7 @@ After installation, the application can also be started with `edtt-definer` from
 .\build.ps1
 ```
 
-The unsigned v0.3 executable is written to `dist\EDTT-Definer-v0.3.exe`.
+The unsigned v0.4 executable is written to `dist\EDTT-Definer-v0.4.exe`.
 
 See [RELEASING.md](RELEASING.md) for the GitHub release checklist and [CHANGELOG.md](CHANGELOG.md) for release notes.
 

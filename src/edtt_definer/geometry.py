@@ -176,3 +176,48 @@ def great_circle_distance_m(
         + math.cos(lat_a) * math.cos(lat_b) * math.sin(longitude_delta / 2) ** 2
     )
     return 2 * radius_m * math.asin(min(1.0, math.sqrt(haversine)))
+
+
+def spherical_midpoint(
+    latitude_a: Decimal | str | int | float,
+    longitude_a: Decimal | str | int | float,
+    latitude_b: Decimal | str | int | float,
+    longitude_b: Decimal | str | int | float,
+) -> tuple[str, str]:
+    """Return the midpoint of the shorter great-circle arc between two points."""
+
+    latitude_a_number = _decimal(latitude_a, "Latitude A")
+    longitude_a_number = _decimal(longitude_a, "Longitude A")
+    latitude_b_number = _decimal(latitude_b, "Latitude B")
+    longitude_b_number = _decimal(longitude_b, "Longitude B")
+    for label, value in (("Latitude A", latitude_a_number), ("Latitude B", latitude_b_number)):
+        if not Decimal("-90") <= value <= Decimal("90"):
+            raise ValueError(f"{label} must be between -90 and 90 degrees.")
+    for label, value in (("Longitude A", longitude_a_number), ("Longitude B", longitude_b_number)):
+        if not Decimal("-180") <= value <= Decimal("180"):
+            raise ValueError(f"{label} must be between -180 and 180 degrees.")
+
+    lat_a = math.radians(float(latitude_a_number))
+    lon_a = math.radians(float(longitude_a_number))
+    lat_b = math.radians(float(latitude_b_number))
+    lon_b = math.radians(float(longitude_b_number))
+    vector_a = (
+        math.cos(lat_a) * math.cos(lon_a),
+        math.cos(lat_a) * math.sin(lon_a),
+        math.sin(lat_a),
+    )
+    vector_b = (
+        math.cos(lat_b) * math.cos(lon_b),
+        math.cos(lat_b) * math.sin(lon_b),
+        math.sin(lat_b),
+    )
+    combined = tuple(a + b for a, b in zip(vector_a, vector_b, strict=True))
+    length = math.sqrt(sum(component * component for component in combined))
+    if length < 1e-12:
+        raise ValueError(
+            "Gate endpoints are opposite each other on the body, so their midpoint is undefined."
+        )
+    x, y, z = (component / length for component in combined)
+    midpoint_latitude = math.degrees(math.atan2(z, math.hypot(x, y)))
+    midpoint_longitude = (math.degrees(math.atan2(y, x)) + 540.0) % 360.0 - 180.0
+    return _coordinate_text(midpoint_latitude), _coordinate_text(midpoint_longitude)

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4 — 2026-09-03
+
+- Convert a complete gate into a point at the spherical midpoint of its shorter great-circle arc, including correct antimeridian and high-latitude handling.
+- Show the midpoint coordinates for confirmation and preserve the waypoint's proximity, altitude, instructions, conditions, name, and advanced entries.
+- Replace the inactive checkable Advanced control with genuinely collapsible sections whose contents are hidden when closed.
+- Make Advanced and Maximum-speed sections collapsed by default, while Travel instructions and Conditions remain open, and remember each choice.
+- Display populated-entry counts in collapsible headers and highlight a closed section when it contains a validation error.
+- Add Follow Windows, Light, and Dark appearance modes with a persistent selection and theme-aware validation and live-status colors.
+- Add delayed hover explanations and accessible descriptions for ambiguous editor controls.
+- Replace the basic About message with a dedicated dialog linking to the repository, issue tracker, releases, and EDSM while retaining the MIT, unofficial-project, and vibe-coding disclosures.
+- Keep the editable project schema at version 2 and leave EDCoPilot TXT syntax unchanged.
+
 ## v0.3 — 2026-09-02
 
 - Display the great-circle distance between manually entered or captured gate endpoints using the stage's body radius.

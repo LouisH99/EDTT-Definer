@@ -3,15 +3,16 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from PySide6.QtCore import QObject, QSettings, Signal
+from PySide6.QtCore import QEvent, QObject, QSettings, Signal
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox, QSizePolicy
 
 from edtt_definer.geometry import calculate_gate, great_circle_distance_m
 from edtt_definer.live import LiveResult, LiveState, LocationSnapshot
 from edtt_definer.model import SectionType
 from edtt_definer.parser import parse_text
 from edtt_definer.project import AltitudeMode, ProjectData, StageMetadata, save_project
+from edtt_definer.theme import ThemeMode
 from edtt_definer.ui import APP_DISPLAY_NAME, MainWindow
 
 from .test_parser import SAMPLE, WRAPPED_SAMPLE
@@ -31,7 +32,7 @@ class FakeEdsmClient(QObject):
 
 
 def test_patch_release_version_is_visible() -> None:
-    assert APP_DISPLAY_NAME == "EDTT Definer v0.3"
+    assert APP_DISPLAY_NAME == "EDTT Definer v0.4"
 
 
 def test_new_course_uses_authoring_defaults(qtbot) -> None:
@@ -690,4 +691,197 @@ def test_create_edcopilot_txt_action_writes_text_not_json(qtbot, monkeypatch, tm
     assert "[eventinfo]" in content
     assert "EndInstruction=Finished." in content
     assert messages
+    window.dirty = False
+
+
+def test_gate_can_be_converted_to_centered_point_without_changing_stage_data(
+    qtbot, monkeypatch
+) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    waypoint.set_value("System", "Midpoint System")
+    waypoint.set_value("Body", "Midpoint Body")
+    waypoint.set_value("Position", "0,-1 to 0,1")
+    waypoint.set_value("Proximity", "125")
+    waypoint.set_value("Altitude", "250")
+    waypoint.set_value("AltitudeProximity", "250")
+    waypoint.set_values("NextInstruction", ["Keep going"])
+    window.project.stage_metadata[waypoint.node_id] = StageMetadata(
+        display_name="Center Gate",
+        altitude_mode=AltitudeMode.MAXIMUM,
+        maximum_altitude="500",
+    )
+    window.refresh_navigation(waypoint.node_id)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    window.convert_gate_to_point()
+
+    assert waypoint.value("Position") == "0.000000,0.000000"
+    assert waypoint.value("Proximity") == "125"
+    assert waypoint.value("Altitude") == "250"
+    assert waypoint.value("AltitudeProximity") == "250"
+    assert waypoint.values("NextInstruction") == ["Keep going"]
+    assert window.project.stage_metadata[waypoint.node_id].display_name == "Center Gate"
+    assert len(window.project.document.waypoints) == 1
+    assert window.stage_form.position_mode.currentText() == "Point"
+    conversion = window.project.capture_metadata[waypoint.node_id]["gate_midpoint_conversion"]
+    assert conversion["source_position"] == "0,-1 to 0,1"
+    assert conversion["latitude"] == "0.000000"
+    assert conversion["longitude"] == "0.000000"
+    assert "Position=0.000000,0.000000" in window.preview.toPlainText()
+    window.dirty = False
+
+
+def test_gate_conversion_requires_complete_non_antipodal_endpoints(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    window.refresh_navigation(waypoint.node_id)
+    window.stage_form.position_mode.setCurrentText("Gate")
+    window.stage_form.lat_a.setText("0")
+    window.stage_form.lon_a.setText("0")
+    window.stage_form.lat_b.setText("0")
+
+    assert not window.stage_form.convert_gate_button.isEnabled()
+
+    window.stage_form.lon_b.setText("1")
+    assert window.stage_form.convert_gate_button.isEnabled()
+
+    window.stage_form.lon_b.setText("180")
+    assert not window.stage_form.convert_gate_button.isEnabled()
+    window.dirty = False
+
+
+def test_gate_conversion_button_is_compact_and_next_to_mode_selector(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    layout = window.stage_form.position_box.layout()
+    index = layout.indexOf(window.stage_form.convert_gate_button)
+
+    assert layout.getItemPosition(index) == (0, 3, 1, 2)
+    assert (
+        window.stage_form.convert_gate_button.sizePolicy().horizontalPolicy()
+        is QSizePolicy.Policy.Maximum
+    )
+    assert window.stage_form.convert_gate_button.text() == "Gate → center point"
+    window.dirty = False
+
+
+def test_collapsible_sections_have_defaults_counts_and_persist(qtbot, tmp_path) -> None:
+    settings_path = tmp_path / "settings.ini"
+    settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+
+    assert not window.event_form.advanced_section.expanded
+    assert not window.stage_form.speed_box.expanded
+    assert window.stage_form.travel_box.expanded
+    assert window.stage_form.conditions_box.expanded
+
+    waypoint = window.project.document.waypoints[0].section
+    window.refresh_navigation(waypoint.node_id)
+    window.stage_form.max_speed.setText("100")
+    assert "(1)" in window.stage_form.speed_box.header.text()
+    window.stage_form.speed_box.set_expanded(True)
+    settings.sync()
+
+    restored_settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+    restored = MainWindow(settings=restored_settings)
+    restored.poll_timer.stop()
+    qtbot.addWidget(restored)
+    assert restored.stage_form.speed_box.expanded
+    window.dirty = False
+    restored.dirty = False
+
+
+def test_collapsed_section_marks_and_reveals_validation_error(qtbot, tmp_path) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    window.refresh_navigation(waypoint.node_id)
+    window.stage_form.speed_box.set_expanded(False)
+    window.stage_form.max_speed.setText("not-a-number")
+
+    assert window.stage_form.speed_box.header.property("hasValidationError") is True
+    matching_item = next(
+        window.validation_list.item(row)
+        for row in range(window.validation_list.count())
+        if "MaxSpeed must be numeric" in window.validation_list.item(row).text()
+    )
+    window._jump_to_issue(matching_item)
+
+    assert window.stage_form.speed_box.expanded
+    assert window.stage_form.speed_box.header.property("hasValidationError") is False
+    window.dirty = False
+
+
+def test_theme_choice_is_applied_and_persisted(qtbot, tmp_path) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+
+    window.set_theme(ThemeMode.DARK)
+    assert settings.value("appearance/theme", "", str) == "dark"
+    assert QApplication.instance().property("edttThemeMode") == "dark"
+    assert window.theme_actions[ThemeMode.DARK].isChecked()
+
+    window.set_theme(ThemeMode.LIGHT)
+    assert settings.value("appearance/theme", "", str) == "light"
+    assert QApplication.instance().property("edttThemeMode") == "light"
+    assert window.theme_actions[ThemeMode.LIGHT].isChecked()
+
+    window.set_theme(ThemeMode.SYSTEM)
+    window.dirty = False
+
+
+def test_explanations_use_delayed_hover_and_accessible_descriptions(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    window.refresh_navigation(waypoint.node_id)
+    window.show()
+    target = window.stage_form.player_state
+    assert "in-game state" in target.accessibleDescription()
+    assert target.toolTip() == ""
+    window.tooltip_filter.delay_ms = 10
+
+    with qtbot.waitSignal(window.tooltip_filter.shown, timeout=1000) as blocker:
+        QApplication.sendEvent(target, QEvent(QEvent.Type.Enter))
+
+    assert blocker.args[0] is target
+    assert "Flying starts" in blocker.args[1]
+    window.dirty = False
+
+
+def test_about_dialog_has_clickable_project_links_and_disclosure(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+
+    window.show_about()
+    qtbot.addWidget(window.about_dialog)
+    links = window.about_dialog.findChild(QLabel, "aboutLinks")
+
+    assert links is not None
+    assert links.openExternalLinks()
+    assert "https://github.com/LouisH99/EDTT-Definer" in links.text()
+    assert "/issues" in links.text()
+    assert "/releases" in links.text()
+    assert "vibe-coded" in " ".join(
+        label.text() for label in window.about_dialog.findChildren(QLabel)
+    )
+    window.about_dialog.close()
     window.dirty = False
