@@ -151,11 +151,24 @@ def great_circle_distance_m(
     longitude_b: Decimal | str | int | float,
     body_radius_km: Decimal | str | int | float,
 ) -> float:
-    lat_a = math.radians(float(_decimal(latitude_a, "Latitude A")))
-    lon_a = math.radians(float(_decimal(longitude_a, "Longitude A")))
-    lat_b = math.radians(float(_decimal(latitude_b, "Latitude B")))
-    lon_b = math.radians(float(_decimal(longitude_b, "Longitude B")))
-    radius_m = float(_decimal(body_radius_km, "BodyRadius") * Decimal("1000"))
+    latitude_a_number = _decimal(latitude_a, "Latitude A")
+    longitude_a_number = _decimal(longitude_a, "Longitude A")
+    latitude_b_number = _decimal(latitude_b, "Latitude B")
+    longitude_b_number = _decimal(longitude_b, "Longitude B")
+    radius_number = _decimal(body_radius_km, "BodyRadius")
+    for label, value in (("Latitude A", latitude_a_number), ("Latitude B", latitude_b_number)):
+        if not Decimal("-90") <= value <= Decimal("90"):
+            raise ValueError(f"{label} must be between -90 and 90 degrees.")
+    for label, value in (("Longitude A", longitude_a_number), ("Longitude B", longitude_b_number)):
+        if not Decimal("-180") <= value <= Decimal("180"):
+            raise ValueError(f"{label} must be between -180 and 180 degrees.")
+    if radius_number <= 0:
+        raise ValueError("BodyRadius must be greater than zero kilometres.")
+    lat_a = math.radians(float(latitude_a_number))
+    lon_a = math.radians(float(longitude_a_number))
+    lat_b = math.radians(float(latitude_b_number))
+    lon_b = math.radians(float(longitude_b_number))
+    radius_m = float(radius_number * Decimal("1000"))
     latitude_delta = lat_b - lat_a
     longitude_delta = lon_b - lon_a
     haversine = (

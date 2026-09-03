@@ -2,7 +2,7 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.2.1**.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.3**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
@@ -10,7 +10,7 @@ EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot t
 
 ### Prebuilt Windows release
 
-Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.2.1.exe` from its **Assets** section, and run it. No installation is required.
+Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.3.exe` from its **Assets** section, and run it. No installation is required.
 
 The executable is not code-signed, so Windows SmartScreen may show its normal warning on first launch.
 
@@ -45,7 +45,7 @@ Python 3.13 is required. Using a virtual environment is recommended because it k
 6. Resolve all red validation errors and choose **Create EDCoPilot TXT**.
 7. Import the resulting `*.export.txt` through EDCoPilot's Time Trials page.
 
-For a manually captured gate, choose **Gate** in the position editor and capture endpoint A and endpoint B separately. Altitude is locked against live capture by default, so capturing point B does not replace the rule chosen at point A. Unlock it when live altitude should update a target; the app intentionally does not invent an altitude tolerance.
+For a manually captured gate, choose **Gate** in the position editor and capture endpoint A and endpoint B separately. Once both endpoints and the body radius are present, the editor displays their great-circle surface distance in metres or kilometres. This measurement is informational and is not added to the EDCoPilot TXT. Altitude is locked against live capture by default, so capturing point B does not replace the rule chosen at point A. Unlock it when live altitude should update a target; the app intentionally does not invent an altitude tolerance.
 
 ### Waypoint names and altitude rules
 
@@ -61,13 +61,19 @@ When a waypoint uses Maximum height, the next waypoint added after it inherits t
 
 The editor can calculate a gate perpendicular to the ship or SRV's live heading:
 
-1. Select Start, a Waypoint, or End and enter that body's `BodyRadius` in kilometres.
+1. Select Start, a Waypoint, or End. Let the editor discover `BodyRadius`, choose **Find radius**, or enter it manually in kilometres.
 2. Wait for live latitude, longitude, and heading to appear.
 3. Enter the total **Gate width** in metres. The default is `2000`.
 4. Leave **Distance ahead** at `0` to center the gate on the current position, or enter a positive distance in metres to place its center ahead of you.
 5. Choose **Create gate from live heading** and review endpoints A and B before exporting.
 
 The calculation uses spherical destination geometry. A centered gate places half its width to the left of the heading and half to the right. Width, forward offset, body radius, center, heading, and calculated endpoints are retained in the editable project's capture metadata but only the EDCoPilot `Position` gate is exported.
+
+### Automatic body radius
+
+Elite Dangerous journal `Scan` events contain a body's radius in metres. EDTT Definer converts that value exactly to kilometres, caches it locally, and uses it for a matching live system and body. The source is shown as **Journal** or **Local cache** beside the field. An existing imported or manually entered `BodyRadius` is never overwritten automatically.
+
+If no local radius is available, **Find radius** can use the public [EDSM](https://www.edsm.net/) system-bodies API. The first lookup asks whether to allow it once, always allow it, or not use it at that time. An allowed lookup sends the system name to `edsm.net` over HTTPS; the current body is matched locally in the returned body list. EDSM responses are cached and marked as **EDSM** or **EDSM cache**. Use **Help → Reset EDSM radius permission** to make the application ask again.
 
 Start, waypoint, and end forms also expose the instruction and timing fields found in EDCoPilot examples, including `EnterSystemInstruction`, `ApproachBodyInstruction`, `LastLegMessage`, `EndInstruction`, and the `MaxSpeed*` settings. The End section uses `EndInstruction`; `NextInstruction` is only used by Start and Waypoint sections.
 
@@ -81,7 +87,7 @@ The normal journal location is detected automatically:
 
 Use **Journal folder…** in the live-location pane if the folder has been redirected. A stale status or “no planetary coordinates” message is normal when the game is closed, at the main menu, or away from a planetary surface.
 
-The application reads `Status.json` for position, body, altitude, and heading. It reads the newest `Journal.*.log` for current system and station context. These files are read locally and never modified.
+The application reads `Status.json` for position, body, altitude, and heading. It reads the newest `Journal.*.log` for current system, station, body identifiers, and locally available scan radii. These files are read locally and never modified.
 
 ## Development
 
@@ -100,7 +106,7 @@ After installation, the application can also be started with `edtt-definer` from
 .\build.ps1
 ```
 
-The unsigned v0.2.1 executable is written to `dist\EDTT-Definer-v0.2.1.exe`.
+The unsigned v0.3 executable is written to `dist\EDTT-Definer-v0.3.exe`.
 
 See [RELEASING.md](RELEASING.md) for the GitHub release checklist and [CHANGELOG.md](CHANGELOG.md) for release notes.
 
@@ -111,7 +117,7 @@ The project repository is [LouisH99/EDTT-Definer](https://github.com/LouisH99/ED
 - `*.edttc.json` is the versioned, editable project format. Do not import it into EDCoPilot.
 - `*.export.txt` is the validated plain-text EDCoPilot import format.
 
-The application reads Elite Dangerous telemetry locally. It does not send data over the network or automate EDCoPilot.
+The application reads Elite Dangerous telemetry locally and does not automate EDCoPilot. It contacts EDSM only after the user permits the optional body-radius fallback described above.
 
 ## License
 

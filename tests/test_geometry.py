@@ -70,3 +70,18 @@ def test_invalid_gate_inputs_are_rejected(kwargs, message: str) -> None:
 
     with pytest.raises(ValueError, match=message):
         calculate_gate(**values)
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        (("91", "0", "0", "0", "1000"), "Latitude A"),
+        (("0", "181", "0", "0", "1000"), "Longitude A"),
+        (("0", "0", "-91", "0", "1000"), "Latitude B"),
+        (("0", "0", "0", "-181", "1000"), "Longitude B"),
+        (("0", "0", "0", "0", "0"), "BodyRadius"),
+    ],
+)
+def test_great_circle_distance_validates_coordinates_and_radius(values, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        great_circle_distance_m(*values)

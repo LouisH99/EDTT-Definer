@@ -3,10 +3,11 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from PySide6.QtCore import QObject, QSettings, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-from edtt_definer.geometry import great_circle_distance_m
+from edtt_definer.geometry import calculate_gate, great_circle_distance_m
 from edtt_definer.live import LiveResult, LiveState, LocationSnapshot
 from edtt_definer.model import SectionType
 from edtt_definer.parser import parse_text
@@ -16,8 +17,21 @@ from edtt_definer.ui import APP_DISPLAY_NAME, MainWindow
 from .test_parser import SAMPLE, WRAPPED_SAMPLE
 
 
+class FakeEdsmClient(QObject):
+    succeeded = Signal(str, str, str)
+    failed = Signal(str, str, str)
+
+    def __init__(self):
+        super().__init__()
+        self.calls: list[tuple[str, str]] = []
+
+    def lookup(self, system: str, body: str) -> bool:
+        self.calls.append((system, body))
+        return True
+
+
 def test_patch_release_version_is_visible() -> None:
-    assert APP_DISPLAY_NAME == "EDTT Definer v0.2.1"
+    assert APP_DISPLAY_NAME == "EDTT Definer v0.3"
 
 
 def test_new_course_uses_authoring_defaults(qtbot) -> None:
@@ -398,6 +412,142 @@ def test_create_gate_from_live_heading(qtbot) -> None:
     assert metadata["forward_offset_m"] == "0"
     assert waypoint.value("System") == "Gate System"
     assert waypoint.value("Body") == "Gate Body"
+    window.dirty = False
+
+
+def test_manual_gate_distance_updates_from_endpoints_and_radius(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    window.refresh_navigation(waypoint.node_id)
+    gate = calculate_gate("0", "0", "0", "2000", "5411.771")
+
+    window.stage_form.position_mode.setCurrentText("Gate")
+    window.stage_form.body_radius.setText("5411.771")
+    window.stage_form.lat_a.setText(gate.latitude_a)
+    window.stage_form.lon_a.setText(gate.longitude_a)
+    window.stage_form.lat_b.setText(gate.latitude_b)
+    window.stage_form.lon_b.setText(gate.longitude_b)
+
+    assert "2.000 km" in window.stage_form.gate_distance_label.text()
+    assert "2,000.0 m" in window.stage_form.gate_distance_label.text()
+    window.stage_form.body_radius.setText("")
+    assert window.stage_form.gate_distance_label.text().endswith("—")
+    window.dirty = False
+
+
+def test_local_radius_autofill_preserves_existing_values(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    window.refresh_navigation(waypoint.node_id)
+    snapshot = LocationSnapshot(
+        system="Radius System",
+        body="Radius Body",
+        body_radius_km=Decimal("5411.771234"),
+        body_radius_source="Journal",
+        latitude=Decimal("1"),
+        longitude=Decimal("2"),
+        flags=1 << 21,
+        flag_has_lat_long=True,
+    )
+
+    window._consider_radius_for_selected(snapshot)
+
+    assert waypoint.value("BodyRadius") == "5411.771234"
+    assert window.stage_form.body_radius_source.text() == "Source: Journal"
+    assert window.project.capture_metadata[waypoint.node_id]["body_radius_source"] == "Journal"
+
+    waypoint.set_value("BodyRadius", "999")
+    window.refresh_navigation(waypoint.node_id)
+    snapshot.body_radius_km = Decimal("1234")
+    window._consider_radius_for_selected(snapshot)
+    assert waypoint.value("BodyRadius") == "999"
+    window.dirty = False
+
+
+def test_edsm_fallback_asks_permission_and_applies_async_result(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    fake = FakeEdsmClient()
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue("edsm_radius_permission", "ask")
+    window = MainWindow(edsm_client=fake, settings=settings)
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    waypoint.set_value("System", "Fallback System")
+    waypoint.set_value("Body", "Fallback System 3 a")
+    window.refresh_navigation(waypoint.node_id)
+    monkeypatch.setattr(window, "_ask_edsm_permission", lambda *_args: "once")
+
+    window.find_radius_for_selected()
+
+    assert fake.calls == [("Fallback System", "Fallback System 3 a")]
+    assert waypoint.value("BodyRadius") == ""
+
+    fake.succeeded.emit("Fallback System", "Fallback System 3 a", "3123.456")
+
+    assert waypoint.value("BodyRadius") == "3123.456"
+    assert window.stage_form.body_radius_source.text() == "Source: EDSM"
+    assert window.project.capture_metadata[waypoint.node_id]["body_radius_source"] == "EDSM"
+    cached = window.live_reader.radius_cache.get(
+        system="Fallback System", body="Fallback System 3 a"
+    )
+    assert cached is not None and cached.origin == "edsm"
+    window.dirty = False
+
+
+def test_edsm_not_now_is_not_reprompted_automatically(qtbot, monkeypatch, tmp_path) -> None:
+    fake = FakeEdsmClient()
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(edsm_client=fake, settings=settings)
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    window.refresh_navigation(waypoint.node_id)
+    prompts = []
+    monkeypatch.setattr(
+        window,
+        "_ask_edsm_permission",
+        lambda system, body: prompts.append((system, body)) or "not_now",
+    )
+    snapshot = LocationSnapshot(
+        system="Prompt System",
+        body="Prompt Body",
+        latitude=Decimal("1"),
+        longitude=Decimal("2"),
+        flags=1 << 21,
+        flag_has_lat_long=True,
+    )
+
+    window._consider_radius_for_selected(snapshot)
+    window._consider_radius_for_selected(snapshot)
+
+    assert prompts == [("Prompt System", "Prompt Body")]
+    assert fake.calls == []
+    assert waypoint.value("BodyRadius") == ""
+    window.dirty = False
+
+
+def test_edsm_always_permission_is_remembered(qtbot, monkeypatch, tmp_path) -> None:
+    fake = FakeEdsmClient()
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(edsm_client=fake, settings=settings)
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    waypoint.set_value("System", "Remember System")
+    waypoint.set_value("Body", "Remember Body")
+    window.refresh_navigation(waypoint.node_id)
+    monkeypatch.setattr(window, "_ask_edsm_permission", lambda *_args: "always")
+
+    window.find_radius_for_selected()
+
+    assert fake.calls == [("Remember System", "Remember Body")]
+    assert settings.value("edsm_radius_permission", "", str) == "always"
     window.dirty = False
 
 

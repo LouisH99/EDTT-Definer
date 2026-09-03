@@ -2,7 +2,7 @@
 
 import os
 
-executable_name = os.environ.get("EDTT_EXE_NAME", "EDTT-Definer-v0.2.1")
+executable_name = os.environ.get("EDTT_EXE_NAME", "EDTT-Definer-v0.3")
 
 a = Analysis(
     ["launcher.py"],

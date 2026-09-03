@@ -10,6 +10,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .radius import BodyRadiusCache, RadiusRecord, normalize_name, positive_decimal
+
 
 SAVED_GAMES_GUID = "{4C5C32FF-BB9D-43B0-BF4C-2A725E4234A0}"
 HAS_LAT_LONG_FLAG = 1 << 21
@@ -26,7 +28,11 @@ class LiveState(str, Enum):
 @dataclass
 class JournalContext:
     system: str | None = None
+    system_address: int | None = None
     body: str | None = None
+    body_id: int | None = None
+    body_radius_km: Decimal | None = None
+    body_radius_source: str | None = None
     station: str | None = None
 
 
@@ -34,7 +40,11 @@ class JournalContext:
 class LocationSnapshot:
     timestamp: str | None = None
     system: str | None = None
+    system_address: int | None = None
     body: str | None = None
+    body_id: int | None = None
+    body_radius_km: Decimal | None = None
+    body_radius_source: str | None = None
     station: str | None = None
     latitude: Decimal | None = None
     longitude: Decimal | None = None
@@ -58,7 +68,11 @@ class LocationSnapshot:
         return {
             "timestamp": self.timestamp,
             "system": self.system,
+            "system_address": self.system_address,
             "body": self.body,
+            "body_id": self.body_id,
+            "body_radius_km": text(self.body_radius_km),
+            "body_radius_source": self.body_radius_source,
             "station": self.station,
             "latitude": text(self.latitude),
             "longitude": text(self.longitude),
@@ -109,9 +123,16 @@ def _timestamp_age_seconds(value: str | None) -> float | None:
 
 
 class LiveLocationReader:
-    def __init__(self, journal_directory: str | Path | None = None, *, stale_after: float = 15.0):
+    def __init__(
+        self,
+        journal_directory: str | Path | None = None,
+        *,
+        stale_after: float = 15.0,
+        radius_cache: BodyRadiusCache | None = None,
+    ):
         self.journal_directory = Path(journal_directory) if journal_directory else default_journal_directory()
         self.stale_after = stale_after
+        self.radius_cache = radius_cache or BodyRadiusCache()
         self.last_snapshot: LocationSnapshot | None = None
         self.context = JournalContext()
         self._journal_path: Path | None = None
@@ -148,6 +169,7 @@ class LiveLocationReader:
         snapshot = LocationSnapshot(
             timestamp=data.get("timestamp"),
             system=self.context.system,
+            system_address=self.context.system_address,
             body=data.get("BodyName") or self.context.body,
             station=self.context.station,
             latitude=_decimal(data.get("Latitude")),
@@ -157,6 +179,20 @@ class LiveLocationReader:
             flags=flags,
             flag_has_lat_long=flag_has_lat_long,
         )
+        same_body = normalize_name(snapshot.body) == normalize_name(self.context.body)
+        snapshot.body_id = self.context.body_id if same_body else None
+        record = self._radius_for(
+            snapshot.system,
+            snapshot.body,
+            snapshot.system_address,
+            snapshot.body_id,
+        )
+        if same_body and self.context.body_radius_km is not None:
+            snapshot.body_radius_km = self.context.body_radius_km
+            snapshot.body_radius_source = self.context.body_radius_source or "Journal"
+        elif record is not None:
+            snapshot.body_radius_km = record.radius_km
+            snapshot.body_radius_source = self._cached_source(record)
         self.last_snapshot = snapshot
         age = _timestamp_age_seconds(snapshot.timestamp)
         if age is not None and age > self.stale_after:
@@ -209,13 +245,126 @@ class LiveLocationReader:
         system = event.get("StarSystem")
         if system:
             self.context.system = system
+        system_address = self._integer(event.get("SystemAddress"))
+        if system_address is not None:
+            self.context.system_address = system_address
+        if event_name == "Scan":
+            self._consume_scan(event)
         if event_name in {"Location", "FSDJump", "CarrierJump", "ApproachBody", "Touchdown", "Liftoff", "SupercruiseExit"}:
             body = event.get("Body") or event.get("BodyName")
             if body:
                 self.context.body = body
+                self.context.body_id = self._integer(event.get("BodyID"))
+                self._resolve_context_radius()
+            elif event_name in {"FSDJump", "CarrierJump"}:
+                self._clear_body()
         if event_name == "LeaveBody":
-            self.context.body = None
+            self._clear_body()
         if event_name == "Docked":
             self.context.station = event.get("StationName")
         elif event_name in {"Undocked", "FSDJump", "CarrierJump"}:
             self.context.station = None
+
+    @staticmethod
+    def _integer(value: Any) -> int | None:
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _cached_source(record: RadiusRecord) -> str:
+        return "EDSM cache" if record.origin == "edsm" else "Local cache"
+
+    def _radius_for(
+        self,
+        system: str | None,
+        body: str | None,
+        system_address: int | None,
+        body_id: int | None,
+    ) -> RadiusRecord | None:
+        return self.radius_cache.get(
+            system=system,
+            body=body,
+            system_address=system_address,
+            body_id=body_id,
+        )
+
+    def _consume_scan(self, event: dict[str, Any]) -> None:
+        radius_m = positive_decimal(event.get("Radius"))
+        body = event.get("BodyName") or event.get("Body")
+        body_id = self._integer(event.get("BodyID"))
+        system = event.get("StarSystem") or self.context.system
+        system_address = self._integer(event.get("SystemAddress")) or self.context.system_address
+        if radius_m is None or not body:
+            return
+        radius_km = radius_m / Decimal("1000")
+        self.radius_cache.put(
+            radius_km,
+            origin="journal",
+            system=system,
+            body=str(body),
+            system_address=system_address,
+            body_id=body_id,
+        )
+        same_id = (
+            body_id is not None
+            and self.context.body_id is not None
+            and body_id == self.context.body_id
+            and (
+                system_address is None
+                or self.context.system_address is None
+                or system_address == self.context.system_address
+            )
+        )
+        same_name = (
+            normalize_name(str(body)) == normalize_name(self.context.body)
+            and (not system or normalize_name(str(system)) == normalize_name(self.context.system))
+        )
+        if same_id or same_name:
+            self.context.body_radius_km = radius_km
+            self.context.body_radius_source = "Journal"
+
+    def _resolve_context_radius(self) -> None:
+        record = self._radius_for(
+            self.context.system,
+            self.context.body,
+            self.context.system_address,
+            self.context.body_id,
+        )
+        if record is None:
+            self.context.body_radius_km = None
+            self.context.body_radius_source = None
+            return
+        self.context.body_radius_km = record.radius_km
+        self.context.body_radius_source = self._cached_source(record)
+
+    def _clear_body(self) -> None:
+        self.context.body = None
+        self.context.body_id = None
+        self.context.body_radius_km = None
+        self.context.body_radius_source = None
+
+    def remember_radius(
+        self,
+        radius_km: Decimal | str,
+        *,
+        origin: str,
+        system: str | None,
+        body: str | None,
+        system_address: int | None = None,
+        body_id: int | None = None,
+    ) -> None:
+        self.radius_cache.put(
+            radius_km,
+            origin=origin,
+            system=system,
+            body=body,
+            system_address=system_address,
+            body_id=body_id,
+        )
+        if (
+            normalize_name(system) == normalize_name(self.context.system)
+            and normalize_name(body) == normalize_name(self.context.body)
+        ):
+            self._resolve_context_radius()

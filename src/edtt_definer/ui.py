@@ -38,7 +38,8 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .geometry import calculate_gate
+from .edsm import EdsmRadiusClient
+from .geometry import calculate_gate, great_circle_distance_m
 from .live import LiveLocationReader, LiveResult, LiveState, LocationSnapshot
 from .model import (
     EntryKind,
@@ -60,6 +61,7 @@ from .project import (
     load_project,
     save_project,
 )
+from .radius import BodyRadiusCache, normalize_name
 from .validator import KNOWN_FIELDS, Severity, ValidationIssue, has_errors, validate_project
 
 
@@ -500,6 +502,8 @@ class StageForm(QWidget):
     capture_b_requested = Signal()
     calculate_gate_requested = Signal()
     gate_parameters_changed = Signal()
+    find_radius_requested = Signal()
+    body_radius_manually_edited = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -515,6 +519,9 @@ class StageForm(QWidget):
         self.system = QLineEdit()
         self.body = QLineEdit()
         self.body_radius = QLineEdit()
+        self.find_radius_button = QPushButton("Find radius")
+        self.body_radius_source = QLabel("Source: —")
+        self.body_radius_source.setWordWrap(True)
         self.station = QLineEdit()
         self.position_mode = QComboBox()
         self.position_mode.addItems(["Point", "Gate"])
@@ -582,6 +589,9 @@ class StageForm(QWidget):
         position_grid.addWidget(QLabel("Distance ahead (m)"), 3, 2)
         position_grid.addWidget(self.gate_forward_offset, 3, 3)
         position_grid.addWidget(self.calculate_gate_button, 3, 4)
+        self.gate_distance_label = QLabel("Measured A–B distance: —")
+        self.gate_distance_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        position_grid.addWidget(self.gate_distance_label, 4, 0, 1, 5)
         self.gate_width.setToolTip("Total gate width. The center mode places half of this distance on each side.")
         self.gate_forward_offset.setToolTip("0 centers the gate on the live position; a positive value places it ahead along the live heading.")
 
@@ -591,7 +601,16 @@ class StageForm(QWidget):
         form.addRow("Player state*", self.player_state)
         form.addRow("System", self.system)
         form.addRow("Body", self.body)
-        form.addRow("Body radius (km)", self.body_radius)
+        radius_editor = QWidget()
+        radius_editor_layout = QVBoxLayout(radius_editor)
+        radius_editor_layout.setContentsMargins(0, 0, 0, 0)
+        radius_row = QHBoxLayout()
+        radius_row.setContentsMargins(0, 0, 0, 0)
+        radius_row.addWidget(self.body_radius, 1)
+        radius_row.addWidget(self.find_radius_button)
+        radius_editor_layout.addLayout(radius_row)
+        radius_editor_layout.addWidget(self.body_radius_source)
+        form.addRow("Body radius (km)", radius_editor)
         form.addRow("Station", self.station)
         form.addRow("Proximity (m)", self.proximity)
         self.altitude_box = QGroupBox("Altitude rule")
@@ -681,6 +700,11 @@ class StageForm(QWidget):
         self.position_mode.currentTextChanged.connect(self._update_gate_fields)
         self.gate_width.textChanged.connect(self.gate_parameters_changed)
         self.gate_forward_offset.textChanged.connect(self.gate_parameters_changed)
+        self.find_radius_button.clicked.connect(self.find_radius_requested)
+        self.body_radius.textEdited.connect(self.body_radius_manually_edited)
+        for widget in (self.lat_a, self.lon_a, self.lat_b, self.lon_b, self.body_radius):
+            widget.textChanged.connect(self._update_gate_distance)
+        self.position_mode.currentTextChanged.connect(self._update_gate_distance)
 
     def set_section(self, section: SectionNode, label: str, metadata: StageMetadata) -> None:
         self.loading = True
@@ -740,6 +764,7 @@ class StageForm(QWidget):
         self.advanced.set_section(section, known)
         self._update_gate_fields(self.position_mode.currentText())
         self._update_altitude_fields(mode)
+        self._update_gate_distance()
         self.position_touched = False
         self.loading = False
 
@@ -818,6 +843,52 @@ class StageForm(QWidget):
         self.gate_forward_offset.setText(forward_offset_m)
         del width_blocker, offset_blocker
 
+    def set_body_radius_value(self, value: str, source: str) -> None:
+        blocker = QSignalBlocker(self.body_radius)
+        self.body_radius.setText(value)
+        del blocker
+        self.set_body_radius_source(source)
+        self._update_gate_distance()
+
+    def set_body_radius_source(self, source: str | None) -> None:
+        if not self.body_radius.text().strip():
+            self.body_radius_source.setText("Source: —")
+        else:
+            self.body_radius_source.setText(f"Source: {source or 'Manual / imported'}")
+
+    def _update_gate_distance(self, *_args) -> None:
+        is_gate = self.position_mode.currentText() == "Gate"
+        self.gate_distance_label.setVisible(is_gate)
+        if not is_gate:
+            return
+        values = (
+            self.lat_a.text().strip(),
+            self.lon_a.text().strip(),
+            self.lat_b.text().strip(),
+            self.lon_b.text().strip(),
+            self.body_radius.text().strip(),
+        )
+        if not all(values):
+            self.gate_distance_label.setText("Measured A–B distance: —")
+            self.gate_distance_label.setToolTip(
+                "Enter or capture both gate endpoints and a body radius to measure the gate."
+            )
+            return
+        try:
+            distance_m = great_circle_distance_m(*values)
+        except ValueError as exc:
+            self.gate_distance_label.setText("Measured A–B distance: unavailable")
+            self.gate_distance_label.setToolTip(str(exc))
+            return
+        if distance_m >= 1000:
+            text = f"{distance_m / 1000:,.3f} km ({distance_m:,.1f} m)"
+        else:
+            text = f"{distance_m:,.1f} m"
+        self.gate_distance_label.setText(f"Measured A–B distance: {text}")
+        self.gate_distance_label.setToolTip(
+            "Great-circle surface distance calculated from endpoints A and B and Body radius."
+        )
+
     def current_altitude_mode(self) -> AltitudeMode:
         data = self.altitude_mode.currentData()
         try:
@@ -885,6 +956,7 @@ class StageForm(QWidget):
         enabled = mode == "Gate"
         self.lat_b.setEnabled(enabled)
         self.lon_b.setEnabled(enabled)
+        self._update_gate_distance()
 
     def _emit_changed(self, *_args) -> None:
         if not self.loading:
@@ -893,13 +965,27 @@ class StageForm(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(
+        self,
+        edsm_client: EdsmRadiusClient | None = None,
+        settings: QSettings | None = None,
+    ):
         super().__init__()
         # Keep the pre-release settings key so existing testers retain their
         # window layout, recent files, and journal-directory override.
-        self.settings = QSettings("EDTT Creator", SETTINGS_APP_NAME)
+        self.settings = settings if settings is not None else QSettings("EDTT Creator", SETTINGS_APP_NAME)
         configured_dir = self.settings.value("journal_directory", "", str)
-        self.live_reader = LiveLocationReader(configured_dir or None)
+        radius_cache = BodyRadiusCache.from_json(
+            self.settings.value("body_radius_cache", "", str)
+        )
+        self.live_reader = LiveLocationReader(configured_dir or None, radius_cache=radius_cache)
+        self.edsm_client = edsm_client or EdsmRadiusClient(self)
+        self.edsm_client.succeeded.connect(self._edsm_radius_succeeded)
+        self.edsm_client.failed.connect(self._edsm_radius_failed)
+        self._radius_lookup_targets: dict[tuple[str, str], set[str]] = {}
+        self._radius_explicit_requests: set[tuple[str, str]] = set()
+        self._radius_prompted: set[tuple[str, str]] = set()
+        self._radius_lookup_attempted: set[tuple[str, str]] = set()
         self.live_result = LiveResult(LiveState.MISSING, None, "Waiting for game data.")
         self.project = ProjectData.new()
         self.project_path: Path | None = None
@@ -928,6 +1014,9 @@ class MainWindow(QMainWindow):
         self.export_action = QAction("&Create EDCoPilot TXT…", self, shortcut="Ctrl+E", triggered=self.export_file)
         self.exit_action = QAction("E&xit", self, triggered=self.close)
         self.about_action = QAction(f"About v{DISPLAY_VERSION}", self, triggered=self.show_about)
+        self.reset_edsm_action = QAction(
+            "Reset EDSM radius permission", self, triggered=self.reset_edsm_permission
+        )
         menu = self.menuBar().addMenu("&File")
         for action in (self.new_action, self.open_action):
             menu.addAction(action)
@@ -940,6 +1029,8 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(self.exit_action)
         help_menu = self.menuBar().addMenu("&Help")
+        help_menu.addAction(self.reset_edsm_action)
+        help_menu.addSeparator()
         help_menu.addAction(self.about_action)
         toolbar = QToolBar("Main")
         toolbar.setMovable(False)
@@ -980,6 +1071,8 @@ class MainWindow(QMainWindow):
         self.stage_form.capture_b_requested.connect(lambda: self.capture_selected("b"))
         self.stage_form.calculate_gate_requested.connect(self.calculate_gate_from_live)
         self.stage_form.gate_parameters_changed.connect(self._update_capture_buttons)
+        self.stage_form.find_radius_requested.connect(self.find_radius_for_selected)
+        self.stage_form.body_radius_manually_edited.connect(self._body_radius_manually_edited)
         self.form_stack.addWidget(self.event_form)
         stage_scroll = QScrollArea()
         stage_scroll.setWidgetResizable(True)
@@ -997,6 +1090,7 @@ class MainWindow(QMainWindow):
         self.live_labels: dict[str, QLabel] = {}
         for key, label in (
             ("system", "System"), ("body", "Body"), ("station", "Station"),
+            ("body_radius_km", "Body radius"),
             ("latitude", "Latitude"), ("longitude", "Longitude"),
             ("altitude", "Altitude"), ("heading", "Heading"),
         ):
@@ -1109,6 +1203,11 @@ class MainWindow(QMainWindow):
                     str(gate_metadata.get("width_m", "2000")),
                     str(gate_metadata.get("forward_offset_m", "0")),
                 )
+            radius_metadata = self.project.capture_metadata.get(section.node_id, {})
+            source = radius_metadata.get("body_radius_source")
+            self.stage_form.set_body_radius_source(
+                str(source) if source else "Manual / imported"
+            )
             self.form_stack.setCurrentIndex(1)
         self._update_capture_buttons()
 
@@ -1388,8 +1487,261 @@ class MainWindow(QMainWindow):
             value = getattr(snapshot, key, None) if snapshot else None
             if isinstance(value, Decimal):
                 value = format(value, "f")
+            if key == "body_radius_km" and value not in (None, "") and snapshot:
+                value = f"{value} km ({snapshot.body_radius_source or 'local'})"
             label.setText(str(value) if value not in (None, "") else "—")
+        self._persist_radius_cache()
+        if snapshot is not None:
+            self._consider_radius_for_selected(snapshot)
         self._update_capture_buttons()
+
+    def _persist_radius_cache(self) -> None:
+        cache = self.live_reader.radius_cache
+        if cache.dirty:
+            self.settings.setValue("body_radius_cache", cache.to_json())
+            cache.mark_clean()
+
+    def _selected_stage_section(self) -> SectionNode | None:
+        section = self.project.document.section_by_id(self.current_section_id or "")
+        if section is None or section.section_type is SectionType.EVENTINFO:
+            return None
+        return section
+
+    def _body_radius_manually_edited(self) -> None:
+        section = self._selected_stage_section()
+        if section is None:
+            return
+        metadata = dict(self.project.capture_metadata.get(section.node_id, {}))
+        value = self.stage_form.body_radius.text().strip()
+        if value:
+            metadata["body_radius_km"] = value
+            metadata["body_radius_source"] = "Manual"
+            self.stage_form.set_body_radius_source("Manual")
+        else:
+            metadata.pop("body_radius_km", None)
+            metadata.pop("body_radius_source", None)
+            self.stage_form.set_body_radius_source(None)
+        if metadata:
+            self.project.capture_metadata[section.node_id] = metadata
+        else:
+            self.project.capture_metadata.pop(section.node_id, None)
+
+    def _radius_context(
+        self,
+        section: SectionNode,
+        snapshot: LocationSnapshot | None,
+    ) -> tuple[str, str] | None:
+        stage_system = section.value("System").strip()
+        stage_body = section.value("Body").strip()
+        if stage_system and stage_body:
+            return stage_system, stage_body
+        if snapshot is None or not snapshot.system or not snapshot.body:
+            return None
+        if stage_system and normalize_name(stage_system) != normalize_name(snapshot.system):
+            return None
+        if stage_body and normalize_name(stage_body) != normalize_name(snapshot.body):
+            return None
+        return stage_system or snapshot.system, stage_body or snapshot.body
+
+    def _consider_radius_for_selected(self, snapshot: LocationSnapshot) -> None:
+        section = self._selected_stage_section()
+        if (
+            section is None
+            or section.value("BodyRadius").strip()
+            or not snapshot.capture_ready
+        ):
+            return
+        context = self._radius_context(section, snapshot)
+        if context is None:
+            return
+        if snapshot.body_radius_km is not None:
+            self._apply_radius_to_section(
+                section,
+                format(snapshot.body_radius_km, "f"),
+                snapshot.body_radius_source or "Journal",
+            )
+            return
+        self._request_edsm_radius(section, *context, automatic=True)
+
+    def find_radius_for_selected(self) -> None:
+        section = self._selected_stage_section()
+        if section is None:
+            return
+        if section.value("BodyRadius").strip():
+            QMessageBox.information(
+                self,
+                "Body radius preserved",
+                "This stage already has a Body radius. Clear it first if you want to replace it; "
+                "EDTT Definer never overwrites an imported or manually entered value automatically.",
+            )
+            return
+        snapshot = self.live_result.snapshot
+        context = self._radius_context(section, snapshot)
+        if context is None:
+            QMessageBox.warning(
+                self,
+                "Cannot find body radius",
+                "Enter both System and Body, or wait until the live game location provides them.",
+            )
+            return
+        system, body = context
+        snapshot_matches = (
+            snapshot is not None
+            and normalize_name(snapshot.system) == normalize_name(system)
+            and normalize_name(snapshot.body) == normalize_name(body)
+        )
+        if snapshot_matches and snapshot and snapshot.body_radius_km is not None:
+            self._apply_radius_to_section(
+                section,
+                format(snapshot.body_radius_km, "f"),
+                snapshot.body_radius_source or "Journal",
+            )
+            return
+        record = self.live_reader.radius_cache.get(
+            system=system,
+            body=body,
+            system_address=snapshot.system_address if snapshot_matches and snapshot else None,
+            body_id=snapshot.body_id if snapshot_matches and snapshot else None,
+        )
+        if record is not None:
+            source = "EDSM cache" if record.origin == "edsm" else "Local cache"
+            self._apply_radius_to_section(section, format(record.radius_km, "f"), source)
+            return
+        self._request_edsm_radius(section, system, body, automatic=False)
+
+    def _apply_radius_to_section(
+        self,
+        section: SectionNode,
+        radius_km: str,
+        source: str,
+    ) -> bool:
+        if section.value("BodyRadius").strip():
+            return False
+        section.set_value("BodyRadius", radius_km)
+        metadata = dict(self.project.capture_metadata.get(section.node_id, {}))
+        metadata["body_radius_km"] = radius_km
+        metadata["body_radius_source"] = source
+        self.project.capture_metadata[section.node_id] = metadata
+        if section.node_id == self.current_section_id and self.stage_form.section is section:
+            self.stage_form.set_body_radius_value(radius_km, source)
+        self.dirty = True
+        self.refresh_validation_and_preview()
+        self._update_title()
+        self._update_capture_buttons()
+        self.statusBar().showMessage(
+            f"Body radius set to {radius_km} km from {source}.", 10000
+        )
+        return True
+
+    def _request_edsm_radius(
+        self,
+        section: SectionNode,
+        system: str,
+        body: str,
+        *,
+        automatic: bool,
+    ) -> None:
+        key = (normalize_name(system), normalize_name(body))
+        if not all(key):
+            return
+        if automatic and key in self._radius_lookup_attempted:
+            return
+        permission = self.settings.value("edsm_radius_permission", "ask", str)
+        if permission != "always":
+            if automatic and key in self._radius_prompted:
+                return
+            decision = self._ask_edsm_permission(system, body)
+            self._radius_prompted.add(key)
+            if decision == "always":
+                self.settings.setValue("edsm_radius_permission", "always")
+            elif decision != "once":
+                return
+        self._radius_lookup_attempted.add(key)
+        self._radius_lookup_targets.setdefault(key, set()).add(section.node_id)
+        if not automatic:
+            self._radius_explicit_requests.add(key)
+        if self.edsm_client.lookup(system, body):
+            self.statusBar().showMessage(
+                f"Looking up {body} in {system} on EDSM…", 10000
+            )
+
+    def _ask_edsm_permission(self, system: str, body: str) -> str:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Allow EDSM radius lookup?")
+        box.setText(
+            f"No local radius was found for {body} in {system}.\n\n"
+            "EDTT Definer can ask EDSM for the system's body list. This sends the "
+            "system name to edsm.net; the body match is performed locally."
+        )
+        once = box.addButton("Allow once", QMessageBox.ButtonRole.AcceptRole)
+        always = box.addButton("Always allow", QMessageBox.ButtonRole.YesRole)
+        not_now = box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(once)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is always:
+            return "always"
+        if clicked is once:
+            return "once"
+        assert clicked is not_now or clicked is None
+        return "not_now"
+
+    def _edsm_radius_succeeded(self, system: str, body: str, radius_km: str) -> None:
+        key = (normalize_name(system), normalize_name(body))
+        snapshot = self.live_result.snapshot
+        snapshot_matches = (
+            snapshot is not None
+            and normalize_name(snapshot.system) == key[0]
+            and normalize_name(snapshot.body) == key[1]
+        )
+        self.live_reader.remember_radius(
+            radius_km,
+            origin="edsm",
+            system=system,
+            body=body,
+            system_address=snapshot.system_address if snapshot_matches and snapshot else None,
+            body_id=snapshot.body_id if snapshot_matches and snapshot else None,
+        )
+        self._persist_radius_cache()
+        targets = self._radius_lookup_targets.pop(key, set())
+        self._radius_explicit_requests.discard(key)
+        applied = 0
+        for node_id in targets:
+            section = self.project.document.section_by_id(node_id)
+            if section is None or section.section_type is SectionType.EVENTINFO:
+                continue
+            stage_system = section.value("System").strip()
+            stage_body = section.value("Body").strip()
+            if stage_system and normalize_name(stage_system) != key[0]:
+                continue
+            if stage_body and normalize_name(stage_body) != key[1]:
+                continue
+            applied += int(self._apply_radius_to_section(section, radius_km, "EDSM"))
+        if not applied:
+            self.statusBar().showMessage(
+                f"EDSM returned {radius_km} km for {body}; no empty matching stage remained.",
+                10000,
+            )
+
+    def _edsm_radius_failed(self, system: str, body: str, message: str) -> None:
+        key = (normalize_name(system), normalize_name(body))
+        self._radius_lookup_targets.pop(key, None)
+        explicit = key in self._radius_explicit_requests
+        self._radius_explicit_requests.discard(key)
+        self.statusBar().showMessage(message, 12000)
+        if explicit:
+            QMessageBox.warning(self, "Body radius lookup failed", message)
+
+    def reset_edsm_permission(self) -> None:
+        self.settings.setValue("edsm_radius_permission", "ask")
+        self._radius_prompted.clear()
+        self._radius_lookup_attempted.clear()
+        QMessageBox.information(
+            self,
+            "EDSM permission reset",
+            "EDTT Definer will ask again before its next EDSM body-radius lookup.",
+        )
 
     def _update_capture_buttons(self) -> None:
         ready = self.live_result.state is LiveState.LIVE and self.live_result.snapshot is not None
@@ -1476,8 +1828,14 @@ class MainWindow(QMainWindow):
         stage.set("System", snapshot.system or stage.get("System") or inherited_system)
         stage.set("Body", snapshot.body or stage.get("Body") or inherited_body)
         stage.set("Station", snapshot.station or stage.get("Station") or inherited_station)
+        if snapshot.body_radius_km is not None:
+            self._apply_radius_to_section(
+                section,
+                format(snapshot.body_radius_km, "f"),
+                snapshot.body_radius_source or "Journal",
+            )
         self._apply_live_altitude(section, snapshot)
-        metadata = snapshot.to_metadata()
+        metadata = self._merged_snapshot_metadata(section, snapshot)
         metadata["calculated_gate"] = {
             "center_latitude": gate.center_latitude,
             "center_longitude": gate.center_longitude,
@@ -1529,12 +1887,38 @@ class MainWindow(QMainWindow):
         stage.set("System", snapshot.system or stage.get("System") or inherited_system)
         stage.set("Body", snapshot.body or stage.get("Body") or inherited_body)
         stage.set("Station", snapshot.station or stage.get("Station") or inherited_station)
+        if snapshot.body_radius_km is not None:
+            self._apply_radius_to_section(
+                section,
+                format(snapshot.body_radius_km, "f"),
+                snapshot.body_radius_source or "Journal",
+            )
         self._apply_live_altitude(section, snapshot)
-        self.project.capture_metadata[section.node_id] = snapshot.to_metadata()
+        self.project.capture_metadata[section.node_id] = self._merged_snapshot_metadata(
+            section, snapshot
+        )
         self.dirty = True
         self.refresh_navigation(section.node_id)
         self.refresh_validation_and_preview()
         self._update_title()
+
+    def _merged_snapshot_metadata(
+        self,
+        section: SectionNode,
+        snapshot: LocationSnapshot,
+    ) -> dict:
+        existing = dict(self.project.capture_metadata.get(section.node_id, {}))
+        radius_metadata = {
+            key: existing[key]
+            for key in ("body_radius_km", "body_radius_source")
+            if key in existing
+        }
+        existing.update(snapshot.to_metadata())
+        if snapshot.body_radius_km is None:
+            for key in ("body_radius_km", "body_radius_source"):
+                existing.pop(key, None)
+            existing.update(radius_metadata)
+        return existing
 
     def _apply_live_altitude(self, section: SectionNode, snapshot: LocationSnapshot) -> None:
         if snapshot.altitude is None:
@@ -1586,4 +1970,5 @@ class MainWindow(QMainWindow):
             return
         self.settings.setValue("window_geometry", self.saveGeometry())
         self.settings.setValue("window_state", self.saveState())
+        self._persist_radius_cache()
         event.accept()

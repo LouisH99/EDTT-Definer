@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3 — 2026-09-02
+
+- Display the great-circle distance between manually entered or captured gate endpoints using the stage's body radius.
+- Read exact planetary radius values from Elite Dangerous journal `Scan` events and cache them locally by game identifiers and names.
+- Fill only empty `BodyRadius` fields, preserving imported and manually entered values.
+- Add a **Find radius** action and visible Manual, Journal, Local cache, EDSM, and EDSM cache source labels.
+- Add an optional asynchronous EDSM fallback with allow-once, always-allow, and not-now permission choices.
+- Store system address, body ID, body radius, and radius source in capture metadata without changing EDCoPilot TXT syntax.
+- Add validation to the shared great-circle distance helper for coordinate ranges and positive body radius.
+
 ## v0.2.1 — 2026-09-01
 
 - New waypoints inherit the previous waypoint's Maximum height value, including when using Capture + add. A changed maximum becomes the default for the following waypoint.
