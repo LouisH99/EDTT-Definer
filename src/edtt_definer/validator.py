@@ -29,12 +29,29 @@ class ValidationIssue:
     field: str | None = None
 
 
+@dataclass(frozen=True)
+class StartVehicleMismatch:
+    race_type: str
+    player_state: str
+    player_state_race_type: str
+    section_id: str
+
+
 EVENT_STATES = {"AUTHOR", "ALPHA", "PROD", "DELETE"}
 GAME_TYPES = {"ODYSSEY", "HORIZONS", "BOTH"}
 RACE_TYPES = {"SHIP", "SRV", "FIGHTER", "ONFOOT"}
 SHIP_SIZES = {"N/A", "S", "M", "L"}
 START_STATES = {"ShipFlyingStart", "SRV", "OnFoot", "Ship", "FighterFlyingStart"}
 STAGE_STATES = START_STATES | {"ShipPass", "Fighter"}
+PLAYER_STATE_RACE_TYPES = {
+    "Ship": "SHIP",
+    "ShipFlyingStart": "SHIP",
+    "ShipPass": "SHIP",
+    "FighterFlyingStart": "FIGHTER",
+    "Fighter": "FIGHTER",
+    "SRV": "SRV",
+    "OnFoot": "ONFOOT",
+}
 REPEATABLE_KEYS = {
     "restriction", "condition", "nextinstruction", "startinstruction",
     "startorientationinstruction", "endinstruction",
@@ -256,6 +273,25 @@ def _validate_stage(section: SectionNode, issues: list[ValidationIssue]) -> None
             )
 
 
+def start_vehicle_mismatch(document: EventDocument) -> StartVehicleMismatch | None:
+    """Return a RaceType/Start PlayerState mismatch when both values are known."""
+    event_sections = document.sections(SectionType.EVENTINFO)
+    start_sections = document.sections(SectionType.START)
+    if not event_sections or not start_sections:
+        return None
+    race_type = event_sections[0].value("RaceType")
+    player_state = start_sections[0].value("PlayerState")
+    expected_race_type = PLAYER_STATE_RACE_TYPES.get(player_state)
+    if not race_type or expected_race_type is None or race_type == expected_race_type:
+        return None
+    return StartVehicleMismatch(
+        race_type=race_type,
+        player_state=player_state,
+        player_state_race_type=expected_race_type,
+        section_id=start_sections[0].node_id,
+    )
+
+
 def validate_document(document: EventDocument) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     for node in document.nodes:
@@ -360,6 +396,19 @@ def validate_document(document: EventDocument) -> list[ValidationIssue]:
                 f"The first waypoint must use PlayerState={start_state} for a flying start.",
                 waypoints[0], "PlayerState",
             )
+
+    mismatch = start_vehicle_mismatch(document)
+    if mismatch is not None:
+        start_section = document.section_by_id(mismatch.section_id)
+        _issue(
+            issues,
+            Severity.WARNING,
+            f"RaceType={mismatch.race_type} does not match Start "
+            f"PlayerState={mismatch.player_state}, which belongs to "
+            f"RaceType={mismatch.player_state_race_type}. Double-check the race vehicle before exporting.",
+            start_section,
+            "PlayerState",
+        )
 
     unknown_fields: dict[str, tuple[str, int, SectionNode]] = {}
     for section in document.sections():

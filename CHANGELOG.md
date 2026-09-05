@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.5 — 2026-09-05
+
+- Add a guarded whole-race conversion between Ship, SLF, SRV, and On Foot that previews every RaceType and PlayerState change.
+- Warn when Event Info `RaceType` does not match the Start `PlayerState`, and require explicit confirmation before exporting that mismatch.
+- Offer flying-start PlayerState choices only for Start and Waypoint 1 while preserving imported values losslessly.
+- Preserve ship/SLF flying starts when converting to Ship and create the required Start/Waypoint 1 pairing when converting to SLF.
+- Keep positions, instructions, conditions, restrictions, altitude rules, waypoint names, advanced entries, and Maximum ship size unchanged during conversion.
+- Add asynchronous GitHub stable-release checks at startup, with a persistent disable option and a manual Help action.
+- Let users open the release page, be reminded later, or skip one version; updates are never downloaded or installed automatically.
+- Validate update version tags and restrict opened release links to this repository on github.com.
+- Expand and centralize delayed hover explanations, including detailed descriptions for every PlayerState.
+- Add three privacy-safe README screenshots generated from a synthetic race.
+- Keep the editable project schema at version 2 and leave EDCoPilot TXT syntax unchanged.
+
 ## v0.4 — 2026-09-03
 
 - Convert a complete gate into a point at the spherical midpoint of its shorter great-circle arc, including correct antimeridian and high-latitude handling.

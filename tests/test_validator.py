@@ -3,7 +3,12 @@ from __future__ import annotations
 from edtt_definer.model import EventDocument, SectionType
 from edtt_definer.parser import parse_text
 from edtt_definer.project import AltitudeMode, ProjectData, StageMetadata
-from edtt_definer.validator import Severity, validate_document, validate_project
+from edtt_definer.validator import (
+    Severity,
+    start_vehicle_mismatch,
+    validate_document,
+    validate_project,
+)
 
 from .test_parser import SAMPLE, WRAPPED_SAMPLE
 
@@ -39,6 +44,37 @@ def test_flying_start_requires_matching_first_waypoint() -> None:
     assert any("first waypoint" in message for message in messages)
     document.waypoints[0].set("PlayerState", "ShipFlyingStart")
     assert not any("first waypoint" in message for message in errors(document))
+
+
+def test_race_type_mismatch_with_start_is_a_warning() -> None:
+    document = parse_text(SAMPLE)
+    document.event_info.set("RaceType", "FIGHTER")
+
+    mismatch = start_vehicle_mismatch(document)
+    issues = validate_document(document)
+
+    assert mismatch is not None
+    assert mismatch.race_type == "FIGHTER"
+    assert mismatch.player_state == "Ship"
+    assert mismatch.player_state_race_type == "SHIP"
+    matching_issues = [
+        issue for issue in issues
+        if "does not match Start PlayerState=Ship" in issue.message
+    ]
+    assert len(matching_issues) == 1
+    assert matching_issues[0].severity is Severity.WARNING
+    assert matching_issues[0].section_id == document.start.section.node_id
+    assert matching_issues[0].field == "PlayerState"
+
+
+def test_matching_race_type_and_start_have_no_vehicle_warning() -> None:
+    document = parse_text(SAMPLE)
+
+    assert start_vehicle_mismatch(document) is None
+    assert not [
+        issue for issue in validate_document(document)
+        if "does not match Start PlayerState" in issue.message
+    ]
 
 
 def test_gate_rejects_incomplete_second_endpoint() -> None:

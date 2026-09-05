@@ -8,5 +8,5 @@ pytest-cache-files-*/
 *.egg-info/
 build/
 dist/
-
 RELEASING.md
+tools/generate_readme_screenshots.py

@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QSettings, Signal
+from PySide6.QtCore import QEvent, QObject, QSettings, Qt, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox, QSizePolicy
 
@@ -13,7 +13,9 @@ from edtt_definer.model import SectionType
 from edtt_definer.parser import parse_text
 from edtt_definer.project import AltitudeMode, ProjectData, StageMetadata, save_project
 from edtt_definer.theme import ThemeMode
-from edtt_definer.ui import APP_DISPLAY_NAME, MainWindow
+from edtt_definer.conversion import RaceVehicle, build_vehicle_conversion
+from edtt_definer.ui import APP_DISPLAY_NAME, MainWindow, RaceConversionDialog
+from edtt_definer.updates import ReleaseInfo
 
 from .test_parser import SAMPLE, WRAPPED_SAMPLE
 
@@ -31,8 +33,22 @@ class FakeEdsmClient(QObject):
         return True
 
 
+class FakeUpdateClient(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, starts: bool = True):
+        super().__init__()
+        self.starts = starts
+        self.calls = 0
+
+    def check(self) -> bool:
+        self.calls += 1
+        return self.starts
+
+
 def test_patch_release_version_is_visible() -> None:
-    assert APP_DISPLAY_NAME == "EDTT Definer v0.4"
+    assert APP_DISPLAY_NAME == "EDTT Definer v0.5"
 
 
 def test_new_course_uses_authoring_defaults(qtbot) -> None:
@@ -694,6 +710,96 @@ def test_create_edcopilot_txt_action_writes_text_not_json(qtbot, monkeypatch, tm
     window.dirty = False
 
 
+def test_vehicle_mismatch_requires_confirmation_before_export(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    window.update_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    window.project.document.event_info.set("RaceType", "FIGHTER")
+    confirmations = []
+    picker_calls = []
+    monkeypatch.setattr(
+        window,
+        "_confirm_vehicle_mismatch_export",
+        lambda mismatch: confirmations.append(mismatch) or False,
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: picker_calls.append(True) or (str(tmp_path / "race"), ""),
+    )
+
+    window.export_file()
+
+    assert len(confirmations) == 1
+    assert confirmations[0].race_type == "FIGHTER"
+    assert confirmations[0].player_state == "Ship"
+    assert picker_calls == []
+    assert not (tmp_path / "race.export.txt").exists()
+    window.dirty = False
+
+
+def test_confirmed_vehicle_mismatch_can_be_exported(qtbot, monkeypatch, tmp_path) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    window.update_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    window.project.document.event_info.set("RaceType", "FIGHTER")
+    output = tmp_path / "confirmed.export.txt"
+    monkeypatch.setattr(window, "_confirm_vehicle_mismatch_export", lambda _mismatch: True)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: (str(output), "EDCoPilot import file (*.export.txt)"),
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args, **_kwargs: None)
+
+    window.export_file()
+
+    assert output.is_file()
+    assert "RaceType=FIGHTER" in output.read_text(encoding="utf-8")
+    window.dirty = False
+
+
+def test_flying_start_choices_only_appear_for_start_and_first_waypoint(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    window.update_timer.stop()
+    qtbot.addWidget(window)
+    document = window.project.document
+
+    def choices() -> list[str]:
+        combo = window.stage_form.player_state
+        return [combo.itemText(index) for index in range(combo.count())]
+
+    window.refresh_navigation(document.start.section.node_id)
+    assert "ShipFlyingStart" in choices()
+    assert "FighterFlyingStart" in choices()
+
+    first = document.waypoints[0].section
+    window.refresh_navigation(first.node_id)
+    assert "ShipFlyingStart" in choices()
+    assert "FighterFlyingStart" in choices()
+
+    second = window.add_waypoint()
+    assert "ShipFlyingStart" not in choices()
+    assert "FighterFlyingStart" not in choices()
+
+    window.refresh_navigation(document.end.section.node_id)
+    assert "ShipFlyingStart" not in choices()
+    assert "FighterFlyingStart" not in choices()
+
+    second.set_value("PlayerState", "FighterFlyingStart")
+    window.refresh_navigation(second.node_id)
+    assert window.stage_form.player_state.currentText() == "FighterFlyingStart"
+    assert "FighterFlyingStart" not in choices()
+    window.dirty = False
+
+
 def test_gate_can_be_converted_to_centered_point_without_changing_stage_data(
     qtbot, monkeypatch
 ) -> None:
@@ -884,4 +990,180 @@ def test_about_dialog_has_clickable_project_links_and_disclosure(qtbot) -> None:
         label.text() for label in window.about_dialog.findChildren(QLabel)
     )
     window.about_dialog.close()
+    window.dirty = False
+
+
+def test_vehicle_conversion_dialog_previews_changes_and_defaults_to_cancel(qtbot) -> None:
+    document = ProjectData.new().document
+    dialog = RaceConversionDialog(document)
+    qtbot.addWidget(dialog)
+    dialog.target.setCurrentIndex(dialog.target.findData(RaceVehicle.SLF.value))
+
+    assert dialog.cancel_button.isDefault()
+    assert not dialog.apply_button.isDefault()
+    assert dialog.apply_button.isEnabled()
+    assert "Event Info: RaceType  SHIP  →  FIGHTER" in dialog.preview.toPlainText()
+    assert "Waypoint 1: PlayerState  ShipPass  →  FighterFlyingStart" in dialog.preview.toPlainText()
+
+
+def test_confirmed_whole_race_conversion_preserves_unrelated_data(
+    qtbot, monkeypatch
+) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    window.update_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    waypoint.set_value("Position", "1.25,2.5")
+    waypoint.set_value("Condition", "HeadingLimit=(90,180)")
+    window.project.stage_metadata[waypoint.node_id] = StageMetadata(
+        display_name="Canyon Gate",
+        altitude_mode=AltitudeMode.MAXIMUM,
+        maximum_altitude="500",
+        altitude_locked=True,
+    )
+    max_ship_size = window.project.document.event_info.get("MaxShipSize")
+    plan = build_vehicle_conversion(window.project.document, RaceVehicle.SLF)
+    monkeypatch.setattr(window, "_choose_vehicle_conversion", lambda: plan)
+
+    window.event_form.convert_race_button.click()
+
+    assert window.project.document.event_info.get("RaceType") == "FIGHTER"
+    assert window.project.document.event_info.get("MaxShipSize") == max_ship_size
+    assert window.project.document.start.get("PlayerState") == "FighterFlyingStart"
+    assert waypoint.value("PlayerState") == "FighterFlyingStart"
+    assert window.project.document.end.get("PlayerState") == "Fighter"
+    assert waypoint.value("Position") == "1.25,2.5"
+    assert waypoint.value("Condition") == "HeadingLimit=(90,180)"
+    assert window.project.stage_metadata[waypoint.node_id].display_name == "Canyon Gate"
+    assert window.dirty
+    assert "RaceType=FIGHTER" in window.preview.toPlainText()
+    window.dirty = False
+
+
+def test_cancelled_whole_race_conversion_changes_nothing(qtbot, monkeypatch) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    window.update_timer.stop()
+    qtbot.addWidget(window)
+    before = window.preview.toPlainText()
+    monkeypatch.setattr(window, "_choose_vehicle_conversion", lambda: None)
+
+    window.convert_whole_race()
+
+    assert window.preview.toPlainText() == before
+    assert not window.dirty
+
+
+def test_automatic_update_preference_and_startup_check(qtbot, tmp_path) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    fake = FakeUpdateClient()
+    window = MainWindow(update_client=fake, settings=settings)
+    window.poll_timer.stop()
+    window.update_timer.stop()
+    qtbot.addWidget(window)
+
+    assert window.automatic_update_action.isChecked()
+    window._automatic_update_check()
+    assert fake.calls == 1
+
+    window.automatic_update_action.setChecked(False)
+    assert settings.value("updates/check_at_startup", True, bool) is False
+    window._automatic_update_check()
+    assert fake.calls == 1
+    window.dirty = False
+
+
+def test_update_can_be_skipped_and_manual_check_ignores_skip(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue("updates/check_at_startup", False)
+    fake = FakeUpdateClient()
+    window = MainWindow(update_client=fake, settings=settings)
+    window.poll_timer.stop()
+    window.update_timer.stop()
+    qtbot.addWidget(window)
+    release = ReleaseInfo(
+        tag_name="v9.9",
+        version=(9, 9, 0),
+        html_url="https://github.com/LouisH99/EDTT-Definer/releases/tag/v9.9",
+        title="EDTT Definer v9.9",
+    )
+    shown = []
+    monkeypatch.setattr(
+        window,
+        "_show_update_available",
+        lambda value: shown.append(value) or "skip",
+    )
+
+    window._update_check_is_manual = False
+    window._update_check_succeeded(release)
+    assert len(shown) == 1
+    assert settings.value("updates/skipped_version", "", str) == "9.9.0"
+
+    window._update_check_is_manual = False
+    window._update_check_succeeded(release)
+    assert len(shown) == 1
+
+    window._update_check_is_manual = True
+    window._update_check_succeeded(release)
+    assert len(shown) == 2
+    window.dirty = False
+
+
+def test_startup_update_failure_is_silent_but_manual_failure_is_reported(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue("updates/check_at_startup", False)
+    window = MainWindow(update_client=FakeUpdateClient(), settings=settings)
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: warnings.append((_args, _kwargs)),
+    )
+
+    window._update_check_is_manual = False
+    window._update_check_failed("offline")
+    assert warnings == []
+    window._update_check_is_manual = True
+    window._update_check_failed("offline")
+    assert len(warnings) == 1
+    assert "offline" in warnings[0][0][-1]
+    window.dirty = False
+
+
+def test_detailed_help_covers_player_states_and_major_controls(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    window.update_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    window.refresh_navigation(waypoint.node_id)
+
+    player_help = window.stage_form.player_state.accessibleDescription()
+    assert "Ship means the ship must be landed" in player_help
+    assert "ShipPass means a ship flies through" in player_help
+    assert "Start and Waypoint 1" in player_help
+    fighter_index = window.stage_form.player_state.findText("Fighter")
+    assert "ship-launched fighter" in window.stage_form.player_state.itemData(
+        fighter_index, Qt.ItemDataRole.ToolTipRole
+    )
+    for widget in (
+        window.event_form.event_ref,
+        window.event_form.convert_race_button,
+        window.stage_form.position_mode,
+        window.stage_form.maximum_altitude,
+        window.stage_form.max_speed,
+        window.navigation,
+        window.capture_button,
+        window.preview,
+    ):
+        assert widget.accessibleDescription()
+        assert widget.property("edttHelpText")
+        assert widget.toolTip() == ""
     window.dirty = False

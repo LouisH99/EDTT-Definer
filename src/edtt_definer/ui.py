@@ -5,8 +5,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QSettings, QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QFont
+from PySide6.QtCore import QSettings, QSignalBlocker, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -40,8 +40,16 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
+from .conversion import (
+    RaceVehicle,
+    VehicleConversionPlan,
+    apply_vehicle_conversion,
+    build_vehicle_conversion,
+    conversion_preview,
+)
 from .edsm import EdsmRadiusClient
 from .geometry import calculate_gate, great_circle_distance_m, spherical_midpoint
+from .help_text import HELP_TEXT, PLAYER_STATE_ITEM_HELP, set_help, set_help_text
 from .live import LiveLocationReader, LiveResult, LiveState, LocationSnapshot
 from .model import (
     EntryKind,
@@ -65,7 +73,16 @@ from .project import (
 )
 from .radius import BodyRadiusCache, normalize_name
 from .theme import ThemeMode, apply_theme, semantic_color
-from .validator import KNOWN_FIELDS, Severity, ValidationIssue, has_errors, validate_project
+from .updates import GitHubUpdateClient, ReleaseInfo, is_newer_release
+from .validator import (
+    KNOWN_FIELDS,
+    Severity,
+    StartVehicleMismatch,
+    ValidationIssue,
+    has_errors,
+    start_vehicle_mismatch,
+    validate_project,
+)
 from .widgets import CollapsibleSection, DelayedTooltipFilter
 
 
@@ -77,6 +94,8 @@ APP_DISPLAY_NAME = f"{APP_NAME} v{DISPLAY_VERSION}"
 PLAYER_STATES = [
     "Ship", "ShipFlyingStart", "ShipPass", "FighterFlyingStart", "Fighter", "SRV", "OnFoot",
 ]
+START_PLAYER_STATES = ["Ship", "ShipFlyingStart", "FighterFlyingStart", "SRV", "OnFoot"]
+ROUTE_PLAYER_STATES = ["Ship", "ShipPass", "Fighter", "SRV", "OnFoot"]
 
 REPOSITORY_URL = "https://github.com/LouisH99/EDTT-Definer"
 ISSUES_URL = f"{REPOSITORY_URL}/issues"
@@ -113,6 +132,11 @@ class SimpleListEditor(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.list)
         layout.addLayout(row)
+        set_help(self, "restrictions")
+        set_help(self.list, "restrictions")
+        set_help(self.edit, "restrictions")
+        set_help(add, "list_add")
+        set_help(remove, "list_remove")
 
     def values(self) -> list[str]:
         return [self.list.item(index).text() for index in range(self.list.count())]
@@ -158,9 +182,6 @@ class InstructionEditor(QWidget):
         self.edit = QLineEdit()
         self.edit.setPlaceholderText("Instruction spoken after this stage")
         self.terse = QCheckBox("Terse")
-        self.terse.setToolTip(
-            "Prefix the instruction with Terse: so EDCoPilot uses the shorter speech behavior."
-        )
         add = QPushButton("Add / update")
         remove = QPushButton("Remove")
         add.clicked.connect(self._add_or_update)
@@ -176,6 +197,12 @@ class InstructionEditor(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.list)
         layout.addLayout(row)
+        set_help(self, "instructions")
+        set_help(self.list, "instructions")
+        set_help(self.edit, "instructions")
+        set_help(self.terse, "terse")
+        set_help(add, "list_add")
+        set_help(remove, "list_remove")
 
     def values(self) -> list[str]:
         return [self.list.item(index).data(Qt.ItemDataRole.UserRole) for index in range(self.list.count())]
@@ -264,6 +291,12 @@ class ConditionEditor(QWidget):
         layout.addWidget(self.list)
         layout.addLayout(row)
         self._kind_changed("Custom")
+        set_help(self, "conditions")
+        set_help(self.list, "conditions")
+        set_help(self.kind, "conditions")
+        set_help(self.value, "condition_value")
+        set_help(add, "list_add")
+        set_help(remove, "list_remove")
 
     def values(self) -> list[str]:
         return [self.list.item(index).text() for index in range(self.list.count())]
@@ -358,6 +391,11 @@ class AdvancedEditor(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.list)
         layout.addLayout(row)
+        set_help(self, "advanced")
+        set_help(self.list, "advanced")
+        set_help(self.edit, "advanced")
+        set_help(update, "list_add")
+        set_help(remove, "list_remove")
 
     def set_section(self, section: SectionNode, known: set[str]) -> None:
         self.section = section
@@ -434,6 +472,8 @@ class AboutDialog(QDialog):
 
         disclosure = QLabel(
             "Licensed under the MIT License.\n\n"
+            "Network disclosure: automatic update checks contact the public GitHub Releases API and can be "
+            "disabled from the Help menu. EDSM is contacted only after permission is given.\n\n"
             "AI development disclosure: This project was “vibe-coded” with OpenAI Codex. "
             "The project owner directed the requirements, supplied examples, tested the application, "
             "and made the release decisions; Codex generated and revised most of the code, tests, "
@@ -455,8 +495,86 @@ class AboutDialog(QDialog):
         layout.addWidget(buttons)
 
 
+class RaceConversionDialog(QDialog):
+    def __init__(self, document: EventDocument, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.document = document
+        self.setWindowTitle("Convert whole race")
+        self.setMinimumSize(620, 430)
+
+        heading = QLabel("Convert the race vehicle")
+        heading.setObjectName("sectionTitle")
+        description = QLabel(
+            "This changes RaceType plus PlayerState in Start, every Waypoint, and End. "
+            "Review every change before applying it."
+        )
+        description.setWordWrap(True)
+
+        self.target = QComboBox()
+        for vehicle in RaceVehicle:
+            self.target.addItem(vehicle.label, vehicle.value)
+        event = document.event_info
+        current_race_type = event.get("RaceType") if event else ""
+        current_index = self.target.findData(current_race_type)
+        if current_index >= 0:
+            self.target.setCurrentIndex(current_index)
+        set_help(self.target, "convert_race")
+
+        target_form = QFormLayout()
+        target_form.addRow("Target vehicle", self.target)
+
+        self.preview = QPlainTextEdit()
+        self.preview.setReadOnly(True)
+        self.preview.setFont(QFont("Consolas", 9))
+        self.preview.setAccessibleName("Vehicle conversion preview")
+
+        note = QLabel(
+            "Positions, instructions, conditions, restrictions, altitude rules, waypoint names, "
+            "advanced entries, and Maximum ship size are not changed. Review vehicle-specific "
+            "conditions and Maximum ship size after conversion."
+        )
+        note.setWordWrap(True)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.apply_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        self.apply_button.setText("Apply conversion")
+        self.apply_button.setDefault(False)
+        self.apply_button.setAutoDefault(False)
+        self.cancel_button.setDefault(True)
+        self.cancel_button.setAutoDefault(True)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(heading)
+        layout.addWidget(description)
+        layout.addLayout(target_form)
+        layout.addWidget(QLabel("Changes to be made:"))
+        layout.addWidget(self.preview, 1)
+        layout.addWidget(note)
+        layout.addWidget(buttons)
+
+        self.target.currentIndexChanged.connect(self._refresh_preview)
+        self._refresh_preview()
+
+    def conversion_plan(self) -> VehicleConversionPlan:
+        return build_vehicle_conversion(
+            self.document,
+            RaceVehicle(str(self.target.currentData())),
+        )
+
+    def _refresh_preview(self, *_args) -> None:
+        plan = self.conversion_plan()
+        self.preview.setPlainText(conversion_preview(plan))
+        self.apply_button.setEnabled(bool(plan.changes))
+
+
 class EventInfoForm(QWidget):
     changed = Signal()
+    convert_race_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -472,6 +590,10 @@ class EventInfoForm(QWidget):
         self.max_ship_size = _editable_combo(["N/A", "S", "M", "L"])
         self.game_type = _editable_combo(["BOTH", "ODYSSEY", "HORIZONS"])
         self.race_type = _editable_combo(["SHIP", "SRV", "FIGHTER", "ONFOOT"])
+        self.convert_race_button = QPushButton("Convert whole race…")
+        self.convert_race_button.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         self.time_penalty = QLineEdit()
         self.max_penalties = QLineEdit()
         self.pause_resume = QCheckBox("Allow PauseResume")
@@ -491,7 +613,12 @@ class EventInfoForm(QWidget):
         form.addRow("Short description*", self.short_desc)
         form.addRow("Maximum ship size", self.max_ship_size)
         form.addRow("Game type*", self.game_type)
-        form.addRow("Race type*", self.race_type)
+        race_type_editor = QWidget()
+        race_type_layout = QHBoxLayout(race_type_editor)
+        race_type_layout.setContentsMargins(0, 0, 0, 0)
+        race_type_layout.addWidget(self.race_type, 1)
+        race_type_layout.addWidget(self.convert_race_button)
+        form.addRow("Race type*", race_type_editor)
         form.addRow("Time penalty", self.time_penalty)
         form.addRow("Maximum penalties", self.max_penalties)
         form.addRow("Event condition", self.pause_resume)
@@ -513,27 +640,24 @@ class EventInfoForm(QWidget):
         self.pause_resume.toggled.connect(self._emit_changed)
         self.restrictions.changed.connect(self._emit_changed)
         self.advanced.changed.connect(self._emit_changed)
+        self.convert_race_button.clicked.connect(self.convert_race_requested)
 
-        self.event_ref.setToolTip(
-            "A stable identifier used by EDCoPilot. Use only letters, numbers, spaces, hyphens, and underscores."
-        )
-        self.event_state.setToolTip(
-            "AUTHOR is for editing, ALPHA for testing, PROD for published events, and DELETE requests removal."
-        )
-        self.max_ship_size.setToolTip(
-            "Largest allowed landing-pad class: N/A, Small, Medium, or Large."
-        )
-        self.game_type.setToolTip(
-            "Whether the event supports Horizons, Odyssey, or both game modes."
-        )
-        self.race_type.setToolTip(
-            "The vehicle or movement type used for the race: ship, fighter, SRV, or on foot."
-        )
-        self.time_penalty.setToolTip("Optional time added for each recorded penalty.")
-        self.max_penalties.setToolTip("Optional number of penalties allowed by the event.")
-        self.pause_resume.setToolTip(
-            "Adds Condition=PauseResume so the race can be paused and resumed."
-        )
+        for widget, help_key in (
+            (self.event_ref, "event_ref"),
+            (self.event_state, "event_state"),
+            (self.name, "event_name"),
+            (self.short_desc, "short_desc"),
+            (self.max_ship_size, "max_ship_size"),
+            (self.game_type, "game_type"),
+            (self.race_type, "race_type"),
+            (self.convert_race_button, "convert_race"),
+            (self.time_penalty, "time_penalty"),
+            (self.max_penalties, "max_penalties"),
+            (self.pause_resume, "pause_resume"),
+            (self.restrictions, "restrictions"),
+            (self.advanced, "advanced"),
+        ):
+            set_help(widget, help_key)
 
     def set_section(self, section: SectionNode) -> None:
         self.loading = True
@@ -650,15 +774,15 @@ class StageForm(QWidget):
         self.conditions = ConditionEditor()
         self.advanced = AdvancedEditor()
 
-        capture_a = QPushButton("Capture A")
-        capture_b = QPushButton("Capture B")
+        self.capture_a_button = QPushButton("Capture A")
+        self.capture_b_button = QPushButton("Capture B")
         self.calculate_gate_button = QPushButton("Create gate from live heading")
         self.convert_gate_button = QPushButton("Gate → center point")
         self.convert_gate_button.setSizePolicy(
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
         )
-        capture_a.clicked.connect(self.capture_a_requested)
-        capture_b.clicked.connect(self.capture_b_requested)
+        self.capture_a_button.clicked.connect(self.capture_a_requested)
+        self.capture_b_button.clicked.connect(self.capture_b_requested)
         self.calculate_gate_button.clicked.connect(self.calculate_gate_requested)
         self.convert_gate_button.clicked.connect(self.convert_gate_requested)
         self.position_box = QGroupBox("Position")
@@ -677,12 +801,12 @@ class StageForm(QWidget):
         position_grid.addWidget(self.lat_a, 1, 1)
         position_grid.addWidget(QLabel("Longitude A"), 1, 2)
         position_grid.addWidget(self.lon_a, 1, 3)
-        position_grid.addWidget(capture_a, 1, 4)
+        position_grid.addWidget(self.capture_a_button, 1, 4)
         position_grid.addWidget(QLabel("Latitude B"), 2, 0)
         position_grid.addWidget(self.lat_b, 2, 1)
         position_grid.addWidget(QLabel("Longitude B"), 2, 2)
         position_grid.addWidget(self.lon_b, 2, 3)
-        position_grid.addWidget(capture_b, 2, 4)
+        position_grid.addWidget(self.capture_b_button, 2, 4)
         position_grid.addWidget(QLabel("Gate width (m)"), 3, 0)
         position_grid.addWidget(self.gate_width, 3, 1)
         position_grid.addWidget(QLabel("Distance ahead (m)"), 3, 2)
@@ -691,12 +815,6 @@ class StageForm(QWidget):
         self.gate_distance_label = QLabel("Measured A–B distance: —")
         self.gate_distance_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         position_grid.addWidget(self.gate_distance_label, 4, 0, 1, 5)
-        self.gate_width.setToolTip("Total gate width. The center mode places half of this distance on each side.")
-        self.gate_forward_offset.setToolTip("0 centers the gate on the live position; a positive value places it ahead along the live heading.")
-        self.convert_gate_button.setToolTip(
-            "Replace this gate with one point at the spherical midpoint of endpoints A and B. "
-            "All other stage settings are kept."
-        )
 
         form = QFormLayout()
         self.waypoint_name_label = QLabel("Waypoint name (editor only)")
@@ -726,12 +844,6 @@ class StageForm(QWidget):
         self.altitude_proximity_label = QLabel("Tolerance (m)")
         altitude_form.addRow(self.altitude_proximity_label, self.altitude_proximity)
         altitude_form.addRow(self.altitude_locked)
-        self.altitude_locked.setToolTip(
-            "When enabled, live position and gate captures keep the stage's existing altitude rule."
-        )
-        self.maximum_altitude.setToolTip(
-            "EDCoPilot receives half this value as Altitude and half as AltitudeProximity."
-        )
         navigation_content = QWidget()
         navigation_form = QFormLayout(navigation_content)
         navigation_form.addRow("Enter system", self.enter_system_instruction)
@@ -833,43 +945,100 @@ class StageForm(QWidget):
             widget.textChanged.connect(self._update_collapsible_counts)
         self.conditions.changed.connect(self._update_collapsible_counts)
 
-        self.player_state.setToolTip(
-            "The in-game state EDCoPilot expects when this stage is crossed. Flying starts have special first-waypoint rules."
-        )
-        self.position_mode.setToolTip(
-            "Point uses one coordinate and a Proximity radius. Gate uses a line between endpoints A and B."
-        )
-        self.body_radius.setToolTip(
-            "Planet radius in kilometres. It is used only for gate geometry and distance calculations."
-        )
-        self.find_radius_button.setToolTip(
-            "Look for a matching radius in local journal data and the local cache, then optionally EDSM."
-        )
-        self.proximity.setToolTip(
-            "How close the player must come to a point checkpoint. EDTT Definer never chooses this tolerance for you."
-        )
-        self.altitude_mode.setToolTip(
-            "Choose no restriction, a maximum height above the surface, or a target altitude with a tolerance."
-        )
-        self.max_speed.setToolTip("Optional maximum speed enforced for this stage by EDCoPilot.")
-        self.max_speed_warning_distance.setToolTip(
-            "Distance before the stage at which EDCoPilot gives speed warnings; accepts comma-separated values."
-        )
-        self.max_speed_warning_trigger.setToolTip(
-            "Optional speed thresholds paired with the warning distances; accepts comma-separated values."
-        )
-        self.conditions.kind.setToolTip(
-            "Choose a guided EDCoPilot condition or Custom to preserve a condition not listed here."
-        )
+        for index in range(self.player_state.count()):
+            value = self.player_state.itemText(index)
+            self.player_state.setItemData(
+                index,
+                PLAYER_STATE_ITEM_HELP.get(value, HELP_TEXT["player_state"]),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        for widget, help_key in (
+            (self.waypoint_name, "waypoint_name"),
+            (self.player_state, "player_state"),
+            (self.system, "system"),
+            (self.body, "body"),
+            (self.body_radius, "body_radius"),
+            (self.find_radius_button, "find_radius"),
+            (self.station, "station"),
+            (self.position_mode, "position_mode"),
+            (self.lat_a, "latitude_a"),
+            (self.lon_a, "longitude_a"),
+            (self.lat_b, "latitude_b"),
+            (self.lon_b, "longitude_b"),
+            (self.capture_a_button, "capture_a"),
+            (self.capture_b_button, "capture_b"),
+            (self.gate_width, "gate_width"),
+            (self.gate_forward_offset, "gate_offset"),
+            (self.calculate_gate_button, "calculate_gate"),
+            (self.convert_gate_button, "convert_gate"),
+            (self.gate_distance_label, "gate_distance"),
+            (self.proximity, "proximity"),
+            (self.altitude_mode, "altitude_mode"),
+            (self.maximum_altitude, "maximum_altitude"),
+            (self.altitude, "target_altitude"),
+            (self.altitude_proximity, "altitude_tolerance"),
+            (self.altitude_locked, "altitude_lock"),
+            (self.enter_system_instruction, "enter_system"),
+            (self.approach_body_instruction, "approach_body"),
+            (self.last_leg_message, "last_leg"),
+            (self.start_orientation_instructions, "instructions"),
+            (self.start_instructions, "instructions"),
+            (self.next_instructions, "instructions"),
+            (self.end_instructions, "instructions"),
+            (self.max_speed, "max_speed"),
+            (self.max_speed_warning_distance, "max_speed_distance"),
+            (self.max_speed_warning_trigger, "max_speed_trigger"),
+            (self.max_speed_warning_instruction, "max_speed_warning"),
+            (self.max_speed_exceeded_instruction, "max_speed_exceeded"),
+            (self.conditions, "conditions"),
+            (self.advanced, "advanced"),
+        ):
+            set_help(widget, help_key)
+        for section, help_key in (
+            (self.travel_box, "enter_system"),
+            (self.speed_box, "max_speed"),
+            (self.conditions_box, "conditions"),
+            (self.advanced_section, "advanced"),
+        ):
+            set_help(section.header, help_key)
 
-    def set_section(self, section: SectionNode, label: str, metadata: StageMetadata) -> None:
+    def _set_player_state_options(self, values: list[str], current: str) -> None:
+        blocker = QSignalBlocker(self.player_state)
+        self.player_state.clear()
+        self.player_state.addItems(values)
+        for index in range(self.player_state.count()):
+            value = self.player_state.itemText(index)
+            self.player_state.setItemData(
+                index,
+                PLAYER_STATE_ITEM_HELP.get(value, HELP_TEXT["player_state"]),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        # Keep an imported unsupported/context-inappropriate value visible without
+        # silently adding it back to the list of choices.
+        self.player_state.setEditText(current)
+        del blocker
+
+    def set_section(
+        self,
+        section: SectionNode,
+        label: str,
+        metadata: StageMetadata,
+        *,
+        allow_flying_start: bool,
+    ) -> None:
         self.loading = True
         self.position_touched = False
         self.section = section
         self.metadata = metadata
         self.title.setText(label)
         self.waypoint_name.setText(metadata.display_name)
-        self.player_state.setCurrentText(section.value("PlayerState"))
+        if section.section_type is SectionType.START:
+            player_states = START_PLAYER_STATES
+        elif allow_flying_start:
+            player_states = PLAYER_STATES
+        else:
+            player_states = ROUTE_PLAYER_STATES
+        self._set_player_state_options(player_states, section.value("PlayerState"))
         self.system.setText(section.value("System"))
         self.body.setText(section.value("Body"))
         self.body_radius.setText(section.value("BodyRadius"))
@@ -1042,7 +1211,8 @@ class StageForm(QWidget):
         )
         if not all(values):
             self.gate_distance_label.setText("Measured A–B distance: —")
-            self.gate_distance_label.setToolTip(
+            set_help_text(
+                self.gate_distance_label,
                 "Enter or capture both gate endpoints and a body radius to measure the gate."
             )
             return
@@ -1050,14 +1220,15 @@ class StageForm(QWidget):
             distance_m = great_circle_distance_m(*values)
         except ValueError as exc:
             self.gate_distance_label.setText("Measured A–B distance: unavailable")
-            self.gate_distance_label.setToolTip(str(exc))
+            set_help_text(self.gate_distance_label, str(exc))
             return
         if distance_m >= 1000:
             text = f"{distance_m / 1000:,.3f} km ({distance_m:,.1f} m)"
         else:
             text = f"{distance_m:,.1f} m"
         self.gate_distance_label.setText(f"Measured A–B distance: {text}")
-        self.gate_distance_label.setToolTip(
+        set_help_text(
+            self.gate_distance_label,
             "Great-circle surface distance calculated from endpoints A and B and Body radius."
         )
 
@@ -1159,6 +1330,7 @@ class MainWindow(QMainWindow):
     def __init__(
         self,
         edsm_client: EdsmRadiusClient | None = None,
+        update_client: GitHubUpdateClient | None = None,
         settings: QSettings | None = None,
     ):
         super().__init__()
@@ -1177,6 +1349,10 @@ class MainWindow(QMainWindow):
         self.edsm_client = edsm_client or EdsmRadiusClient(self)
         self.edsm_client.succeeded.connect(self._edsm_radius_succeeded)
         self.edsm_client.failed.connect(self._edsm_radius_failed)
+        self.update_client = update_client or GitHubUpdateClient(self)
+        self.update_client.succeeded.connect(self._update_check_succeeded)
+        self.update_client.failed.connect(self._update_check_failed)
+        self._update_check_is_manual = False
         self._radius_lookup_targets: dict[tuple[str, str], set[str]] = {}
         self._radius_explicit_requests: set[tuple[str, str]] = set()
         self._radius_prompted: set[tuple[str, str]] = set()
@@ -1203,6 +1379,11 @@ class MainWindow(QMainWindow):
         self.poll_timer.setInterval(750)
         self.poll_timer.timeout.connect(self._poll_live)
         self.poll_timer.start()
+        self.update_timer = QTimer(self)
+        self.update_timer.setSingleShot(True)
+        self.update_timer.timeout.connect(self._automatic_update_check)
+        if self.automatic_update_action.isChecked():
+            self.update_timer.start(1800)
 
     def _build_actions(self) -> None:
         self.new_action = QAction("&New", self, shortcut="Ctrl+N", triggered=self.new_project)
@@ -1215,6 +1396,16 @@ class MainWindow(QMainWindow):
         self.export_action = QAction("&Create EDCoPilot TXT…", self, shortcut="Ctrl+E", triggered=self.export_file)
         self.exit_action = QAction("E&xit", self, triggered=self.close)
         self.about_action = QAction(f"About v{DISPLAY_VERSION}", self, triggered=self.show_about)
+        self.check_updates_action = QAction(
+            "Check for &Updates…", self, triggered=lambda: self.check_for_updates(manual=True)
+        )
+        self.automatic_update_action = QAction(
+            "Check for updates automatically", self, checkable=True
+        )
+        self.automatic_update_action.setChecked(
+            self.settings.value("updates/check_at_startup", True, bool)
+        )
+        self.automatic_update_action.toggled.connect(self._set_automatic_update_checks)
         self.reset_edsm_action = QAction(
             "Reset EDSM radius permission", self, triggered=self.reset_edsm_permission
         )
@@ -1230,6 +1421,9 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(self.exit_action)
         help_menu = self.menuBar().addMenu("&Help")
+        help_menu.addAction(self.check_updates_action)
+        help_menu.addAction(self.automatic_update_action)
+        help_menu.addSeparator()
         help_menu.addAction(self.reset_edsm_action)
         help_menu.addSeparator()
         help_menu.addAction(self.about_action)
@@ -1254,6 +1448,20 @@ class MainWindow(QMainWindow):
             toolbar.addAction(action)
         self.addToolBar(toolbar)
         self._rebuild_recent_menu()
+        action_help = {
+            self.new_action: "action_new",
+            self.open_action: "action_open",
+            self.save_action: "action_save",
+            self.save_as_action: "action_save_as",
+            self.export_action: "action_export",
+            self.exit_action: "action_exit",
+            self.check_updates_action: "action_update",
+            self.automatic_update_action: "action_auto_update",
+            self.reset_edsm_action: "action_reset_edsm",
+            self.about_action: "action_about",
+        }
+        for action, help_key in action_help.items():
+            set_help(action, help_key)
 
     def _build_ui(self) -> None:
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1264,25 +1472,23 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(QLabel("Race structure"))
         self.navigation = QListWidget()
         self.navigation.currentItemChanged.connect(self._navigation_changed)
+        set_help(self.navigation, "navigation")
         left_layout.addWidget(self.navigation, 1)
         waypoint_row = QGridLayout()
         buttons = [
-            ("Add", self.add_waypoint), ("Capture + add", self.capture_and_add),
-            ("Duplicate", self.duplicate_waypoint), ("Delete", self.delete_waypoint),
-            ("Move up", lambda: self.move_waypoint(-1)), ("Move down", lambda: self.move_waypoint(1)),
+            ("Add", self.add_waypoint, "add_waypoint"),
+            ("Capture + add", self.capture_and_add, "capture_add"),
+            ("Duplicate", self.duplicate_waypoint, "duplicate_waypoint"),
+            ("Delete", self.delete_waypoint, "delete_waypoint"),
+            ("Move up", lambda: self.move_waypoint(-1), "move_up"),
+            ("Move down", lambda: self.move_waypoint(1), "move_down"),
         ]
-        for index, (text, callback) in enumerate(buttons):
+        self.waypoint_buttons: dict[str, QPushButton] = {}
+        for index, (text, callback, help_key) in enumerate(buttons):
             button = QPushButton(text)
             button.clicked.connect(callback)
-            descriptions = {
-                "Add": "Add a new waypoint after the existing waypoints.",
-                "Capture + add": "Add a waypoint and fill it from the current live surface coordinates.",
-                "Duplicate": "Duplicate the selected waypoint, including editor-only metadata.",
-                "Delete": "Delete the selected waypoint.",
-                "Move up": "Move the selected waypoint one place earlier in the route.",
-                "Move down": "Move the selected waypoint one place later in the route.",
-            }
-            button.setToolTip(descriptions[text])
+            set_help(button, help_key)
+            self.waypoint_buttons[text] = button
             waypoint_row.addWidget(button, index // 2, index % 2)
         left_layout.addLayout(waypoint_row)
 
@@ -1290,6 +1496,7 @@ class MainWindow(QMainWindow):
         self.event_form = EventInfoForm()
         self.stage_form = StageForm()
         self.event_form.changed.connect(self._document_changed)
+        self.event_form.convert_race_requested.connect(self.convert_whole_race)
         self.stage_form.changed.connect(self._document_changed)
         self.stage_form.metadata_changed.connect(self._stage_metadata_changed)
         self.stage_form.capture_a_requested.connect(lambda: self.capture_selected("a"))
@@ -1328,31 +1535,27 @@ class MainWindow(QMainWindow):
         live_buttons = QHBoxLayout()
         self.capture_button = QPushButton("Capture into selected")
         self.capture_add_button = QPushButton("Capture + add waypoint")
-        folder_button = QPushButton("Journal folder…")
+        self.journal_folder_button = QPushButton("Journal folder…")
         self.capture_button.clicked.connect(lambda: self.capture_selected(None))
         self.capture_add_button.clicked.connect(self.capture_and_add)
-        folder_button.clicked.connect(self.choose_journal_directory)
-        self.capture_button.setToolTip(
-            "Fill the selected Start, Waypoint, or End from valid live surface coordinates."
-        )
-        self.capture_add_button.setToolTip(
-            "Create a new waypoint and fill it from valid live surface coordinates."
-        )
-        folder_button.setToolTip(
-            "Override the automatically detected Elite Dangerous Saved Games journal folder."
-        )
+        self.journal_folder_button.clicked.connect(self.choose_journal_directory)
+        set_help(self.capture_button, "capture_selected")
+        set_help(self.capture_add_button, "capture_add")
+        set_help(self.journal_folder_button, "journal_folder")
         live_buttons.addWidget(self.capture_button)
         live_buttons.addWidget(self.capture_add_button)
-        live_buttons.addWidget(folder_button)
+        live_buttons.addWidget(self.journal_folder_button)
         live_layout.addLayout(live_buttons)
         right_layout.addWidget(live_box)
 
         tabs = QTabWidget()
         self.validation_list = QListWidget()
         self.validation_list.itemDoubleClicked.connect(self._jump_to_issue)
+        set_help(self.validation_list, "validation")
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setFont(QFont("Consolas", 9))
+        set_help(self.preview, "preview")
         tabs.addTab(self.validation_list, "Validation")
         tabs.addTab(self.preview, "File preview")
         right_layout.addWidget(tabs, 1)
@@ -1475,7 +1678,21 @@ class MainWindow(QMainWindow):
             self.form_stack.setCurrentIndex(0)
         else:
             label = self.navigation.currentItem().text() if self.navigation.currentItem() else section.name.title()
-            self.stage_form.set_section(section, label, self.project.metadata_for(section.node_id))
+            first_waypoint = next(iter(self.project.document.waypoints), None)
+            allow_flying_start = (
+                section.section_type is SectionType.START
+                or (
+                    section.section_type is SectionType.WAYPOINT
+                    and first_waypoint is not None
+                    and first_waypoint.section.node_id == section.node_id
+                )
+            )
+            self.stage_form.set_section(
+                section,
+                label,
+                self.project.metadata_for(section.node_id),
+                allow_flying_start=allow_flying_start,
+            )
             gate_metadata = self.project.capture_metadata.get(section.node_id, {}).get("calculated_gate")
             if isinstance(gate_metadata, dict):
                 self.stage_form.set_gate_parameters(
@@ -1629,6 +1846,104 @@ class MainWindow(QMainWindow):
         marker = "*" if self.dirty else ""
         self.setWindowTitle(f"{marker}{name} — {APP_DISPLAY_NAME}")
 
+    def _choose_vehicle_conversion(self) -> VehicleConversionPlan | None:
+        dialog = RaceConversionDialog(self.project.document, self)
+        self.tooltip_filter.register_existing(dialog)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.conversion_plan()
+
+    def convert_whole_race(self) -> None:
+        plan = self._choose_vehicle_conversion()
+        if plan is None or not plan.changes:
+            return
+        selected_id = self.current_section_id
+        apply_vehicle_conversion(self.project.document, plan)
+        self.dirty = True
+        self.refresh_navigation(selected_id)
+        self.refresh_validation_and_preview()
+        self._update_title()
+        self._update_capture_buttons()
+        self.statusBar().showMessage(
+            f"Converted {len(plan.changes)} field(s) for a {plan.target.label} race. "
+            "Review conditions and Maximum ship size.",
+            10000,
+        )
+
+    def _set_automatic_update_checks(self, enabled: bool) -> None:
+        self.settings.setValue("updates/check_at_startup", bool(enabled))
+        if enabled and hasattr(self, "update_timer"):
+            self.update_timer.start(0)
+        elif hasattr(self, "update_timer"):
+            self.update_timer.stop()
+
+    def _automatic_update_check(self) -> None:
+        if self.automatic_update_action.isChecked():
+            self.check_for_updates(manual=False)
+
+    def check_for_updates(self, *, manual: bool) -> None:
+        previous_mode = self._update_check_is_manual
+        self._update_check_is_manual = manual
+        if self.update_client.check():
+            if manual:
+                self.statusBar().showMessage("Checking GitHub for updates…")
+            return
+        self._update_check_is_manual = previous_mode
+        if manual:
+            QMessageBox.information(
+                self,
+                "Update check in progress",
+                "EDTT Definer is already checking GitHub for updates.",
+            )
+
+    def _update_check_succeeded(self, release: ReleaseInfo) -> None:
+        manual = self._update_check_is_manual
+        self._update_check_is_manual = False
+        if not is_newer_release(release):
+            if manual:
+                QMessageBox.information(
+                    self,
+                    "No update available",
+                    f"{APP_DISPLAY_NAME} is the latest stable release.",
+                )
+            return
+        skipped = self.settings.value("updates/skipped_version", "", str)
+        if not manual and skipped == release.normalized_version:
+            return
+        choice = self._show_update_available(release)
+        if choice == "open":
+            QDesktopServices.openUrl(QUrl(release.html_url))
+        elif choice == "skip":
+            self.settings.setValue("updates/skipped_version", release.normalized_version)
+
+    def _update_check_failed(self, message: str) -> None:
+        manual = self._update_check_is_manual
+        self._update_check_is_manual = False
+        if manual:
+            QMessageBox.warning(self, "Update check failed", message)
+
+    def _show_update_available(self, release: ReleaseInfo) -> str:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("EDTT Definer update available")
+        box.setText(f"{release.title} is available.")
+        box.setInformativeText(
+            f"You are using v{DISPLAY_VERSION}. EDTT Definer can open the GitHub release page, "
+            "but it will never download or install an update automatically."
+        )
+        open_button = box.addButton("Open release page", QMessageBox.ButtonRole.AcceptRole)
+        later_button = box.addButton("Remind later", QMessageBox.ButtonRole.RejectRole)
+        skip_button = box.addButton("Skip this version", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(later_button)
+        box.setEscapeButton(later_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is open_button:
+            return "open"
+        if clicked is skip_button:
+            return "skip"
+        return "later"
+
     def show_about(self) -> None:
         existing = getattr(self, "about_dialog", None)
         if existing is not None and existing.isVisible():
@@ -1715,6 +2030,9 @@ class MainWindow(QMainWindow):
                 f"Fix the {count} validation error(s) shown in the Validation tab before exporting.",
             )
             return
+        mismatch = start_vehicle_mismatch(self.project.document)
+        if mismatch is not None and not self._confirm_vehicle_mismatch_export(mismatch):
+            return
         initial = self.project.last_export_path or ""
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -1740,6 +2058,26 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", f"Could not export the file:\n{exc}")
+
+    def _confirm_vehicle_mismatch_export(self, mismatch: StartVehicleMismatch) -> bool:
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Warning)
+        message.setWindowTitle("Race vehicle mismatch")
+        message.setText("Race Type and the Start Player State do not match.")
+        message.setInformativeText(
+            f"Event Info uses RaceType={mismatch.race_type}.\n"
+            f"Start uses PlayerState={mismatch.player_state}, which belongs to "
+            f"RaceType={mismatch.player_state_race_type}.\n\n"
+            "Double-check the intended vehicle. Do you still want to create the EDCoPilot TXT?"
+        )
+        export_button = message.addButton(
+            "Export anyway", QMessageBox.ButtonRole.AcceptRole
+        )
+        cancel_button = message.addButton(QMessageBox.StandardButton.Cancel)
+        message.setDefaultButton(cancel_button)
+        message.setEscapeButton(cancel_button)
+        message.exec()
+        return message.clickedButton() is export_button
 
     def _default_waypoint_state(self) -> str:
         event = self.project.document.event_info

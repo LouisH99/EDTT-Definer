@@ -2,15 +2,23 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.4**.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.5**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
+
+## Screenshots
+
+![EDTT Definer event editor overview](docs/images/editor-overview.png)
+
+![Gate editing with synthetic live game data](docs/images/gate-live-capture.png)
+
+![Whole-race vehicle conversion preview](docs/images/whole-race-conversion.png)
 
 ## Run the application
 
 ### Prebuilt Windows release
 
-Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.4.exe` from its **Assets** section, and run it. No installation is required.
+Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.5.exe` from its **Assets** section, and run it. No installation is required.
 
 The executable is not code-signed, so Windows SmartScreen may show its normal warning on first launch.
 
@@ -45,6 +53,16 @@ Python 3.13 is required. Using a virtual environment is recommended because it k
 6. Resolve all red validation errors and choose **Create EDCoPilot TXT**.
 7. Import the resulting `*.export.txt` through EDCoPilot's Time Trials page.
 
+### Convert the whole race vehicle
+
+Use **Convert whole race…** beside Race Type to change a complete course between Ship, SLF, SRV, and On Foot. The confirmation window lists every `RaceType` and `PlayerState` change before anything is applied.
+
+Ship conversion preserves an existing ship or SLF flying start. Otherwise it creates a landed Ship start and uses `ShipPass` for route waypoints. SLF conversion creates the required `FighterFlyingStart` pairing on Start and Waypoint 1. SRV and On Foot apply their matching state to every stage.
+
+Only `RaceType` and `PlayerState` are changed. Positions, altitude rules, instructions, conditions, restrictions, waypoint names, advanced entries, and Maximum ship size remain untouched. Review vehicle-specific conditions and Maximum ship size after converting.
+
+The Start section is also checked against Event Info's `RaceType`. A mismatch is shown as a validation warning and must be explicitly confirmed before export, helping catch a race whose vehicle conversion was only partly completed. Flying-start PlayerState choices are offered only for Start and Waypoint 1; imported values elsewhere remain visible and are preserved until changed.
+
 For a manually captured gate, choose **Gate** in the position editor and capture endpoint A and endpoint B separately. Once both endpoints and the body radius are present, the editor displays their great-circle surface distance in metres or kilometres. This measurement is informational and is not added to the EDCoPilot TXT. Altitude is locked against live capture by default, so capturing point B does not replace the rule chosen at point A. Unlock it when live altitude should update a target; the app intentionally does not invent an altitude tolerance.
 
 ### Convert a gate to its center point
@@ -57,7 +75,13 @@ The existing Proximity value is preserved rather than invented or changed. A con
 
 Less frequently used form areas can be collapsed with their arrow headers. **Advanced / unrecognized entries** and **Maximum-speed rule** start closed; **Travel instructions** and **Conditions** start open. The application remembers these choices. A populated section shows an entry count in its header, and a closed section is highlighted if it contains a validation error.
 
-Use **Appearance → Follow Windows**, **Light**, or **Dark** to choose the interface theme. Follow Windows is the default, and an explicit choice is remembered. Hover over an unfamiliar field or button for about two seconds to see a short explanation; the same descriptions are exposed to accessibility tools.
+Use **Appearance → Follow Windows**, **Light**, or **Dark** to choose the interface theme. Follow Windows is the default, and an explicit choice is remembered. Hover over a field or button for about two seconds to see its purpose, accepted values, consequences, and examples where useful. Player-state help explains every supported state and the special first-waypoint rules for flying starts. The same descriptions are exposed to accessibility tools.
+
+### Update checks
+
+EDTT Definer checks the public GitHub Releases API shortly after startup so it can report a newer stable version. Disable this with **Help → Check for updates automatically**, or run **Help → Check for Updates…** at any time. An available update can be opened in the browser, postponed, or skipped. The application never downloads or installs updates itself.
+
+Startup connection failures are silent. Manual checks report connection, response, and GitHub rate-limit errors. A skipped version remains hidden during automatic checks but is still reported by a manual check.
 
 ### Waypoint names and altitude rules
 
@@ -118,9 +142,9 @@ After installation, the application can also be started with `edtt-definer` from
 .\build.ps1
 ```
 
-The unsigned v0.4 executable is written to `dist\EDTT-Definer-v0.4.exe`.
+The unsigned v0.5 executable is written to `dist\EDTT-Definer-v0.5.exe`.
 
-See [RELEASING.md](RELEASING.md) for the GitHub release checklist and [CHANGELOG.md](CHANGELOG.md) for release notes.
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 The project repository is [LouisH99/EDTT-Definer](https://github.com/LouisH99/EDTT-Definer). Bugs and feature requests can be submitted through [GitHub Issues](https://github.com/LouisH99/EDTT-Definer/issues).
 
@@ -129,7 +153,7 @@ The project repository is [LouisH99/EDTT-Definer](https://github.com/LouisH99/ED
 - `*.edttc.json` is the versioned, editable project format. Do not import it into EDCoPilot.
 - `*.export.txt` is the validated plain-text EDCoPilot import format.
 
-The application reads Elite Dangerous telemetry locally and does not automate EDCoPilot. It contacts EDSM only after the user permits the optional body-radius fallback described above.
+The application reads Elite Dangerous telemetry locally and does not automate EDCoPilot. It contacts EDSM only after the user permits the optional body-radius fallback described above. When automatic update checks are enabled, it also requests the latest public release metadata from GitHub; no project or game data is sent.
 
 ## License
 
