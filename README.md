@@ -2,9 +2,7 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.5**.
-
-> **Development branch:** `v0.6-dev` currently identifies itself as **v0.6.2-dev** and contains the live 3D course-view and race-line recording preview. It is intended for testing and may change before a stable release.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.6**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
