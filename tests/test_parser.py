@@ -229,6 +229,37 @@ def test_waypoint_operations_keep_complete_blocks() -> None:
     assert len(document.waypoints) == 1
 
 
+def test_waypoint_group_operations_preserve_route_order() -> None:
+    document = parse_text(SAMPLE)
+    first = document.waypoints[0].section
+    first.set_value("NextInstruction", "First")
+    second = document.add_waypoint("ShipPass")
+    second.set_value("NextInstruction", "Second")
+    third = document.add_waypoint("ShipPass")
+    third.set_value("NextInstruction", "Third")
+
+    duplicates = document.duplicate_waypoints([first.node_id, second.node_id])
+
+    assert [
+        waypoint.get("NextInstruction") for waypoint in document.waypoints
+    ] == ["First", "Second", "First", "Second", "Third"]
+    assert len({duplicate.node_id for duplicate in duplicates}) == 2
+    assert all(
+        duplicate.node_id not in {first.node_id, second.node_id}
+        for duplicate in duplicates
+    )
+
+    duplicate_ids = [duplicate.node_id for duplicate in duplicates]
+    assert document.move_waypoints(duplicate_ids, 1)
+    assert [
+        waypoint.get("NextInstruction") for waypoint in document.waypoints
+    ] == ["First", "Second", "Third", "First", "Second"]
+    assert document.move_waypoints(duplicate_ids, -1)
+    assert [
+        waypoint.get("NextInstruction") for waypoint in document.waypoints
+    ] == ["First", "Second", "First", "Second", "Third"]
+
+
 def test_event_wrapper_and_inline_comments_are_lossless() -> None:
     document = parse_text(WRAPPED_SAMPLE)
     assert [section.name for section in document.sections()] == ["eventinfo", "start", "end"]

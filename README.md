@@ -2,7 +2,7 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.6**.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.6.3**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
@@ -18,7 +18,7 @@ EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot t
 
 ### Prebuilt Windows release
 
-Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.5.exe` from its **Assets** section, and run it. No installation is required.
+Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.6.3.exe` from its **Assets** section, and run it. No installation is required.
 
 The executable is not code-signed, so Windows SmartScreen may show its normal warning on first launch.
 
@@ -47,7 +47,7 @@ Python 3.13 is required. Using a virtual environment is recommended because it k
 
 1. Choose **File → New** or open an existing `*.export.txt` definition.
 2. Complete Event Info, Start, any intermediate Waypoints, and End.
-3. Add, duplicate, delete, or reorder waypoints from the left pane.
+3. Add, duplicate, delete, or reorder waypoints from the left pane. Hold **Ctrl** to select separate waypoints or **Shift** to select a range, then duplicate, delete, or move the complete group together.
 4. When Elite Dangerous is reporting surface coordinates, use **Capture into selected** or **Capture + add waypoint**.
 5. Optionally save incomplete work with **Save Editable Project (.json)**. This file is only for reopening in the editor.
 6. Resolve all red validation errors and choose **Create EDCoPilot TXT**.
@@ -169,7 +169,7 @@ After installation, the application can also be started with `edtt-definer` from
 .\build.ps1
 ```
 
-On the `v0.6-dev` branch, the unsigned preview executable is written to `dist\EDTT-Definer-v0.6.2-dev.exe`. Stable release builds use their corresponding versioned filename.
+The unsigned executable is written to `dist\EDTT-Definer-v0.6.3.exe`.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
