@@ -52,6 +52,12 @@ PLAYER_STATE_RACE_TYPES = {
     "SRV": "SRV",
     "OnFoot": "ONFOOT",
 }
+RACE_TYPE_VEHICLE_LABELS = {
+    "SHIP": "Ship",
+    "FIGHTER": "SLF",
+    "SRV": "SRV",
+    "ONFOOT": "On Foot",
+}
 REPEATABLE_KEYS = {
     "restriction", "condition", "nextinstruction", "startinstruction",
     "startorientationinstruction", "endinstruction",
@@ -292,6 +298,46 @@ def start_vehicle_mismatch(document: EventDocument) -> StartVehicleMismatch | No
     )
 
 
+def _warn_for_waypoint_vehicle_outlier(
+    document: EventDocument, issues: list[ValidationIssue],
+) -> None:
+    """Flag one waypoint whose vehicle differs from every other waypoint."""
+    waypoints = document.sections(SectionType.WAYPOINT)
+    if len(waypoints) < 3:
+        return
+
+    vehicles: list[str] = []
+    for waypoint in waypoints:
+        race_type = PLAYER_STATE_RACE_TYPES.get(waypoint.value("PlayerState"))
+        if race_type is None:
+            # Unknown PlayerState values already receive a validation error. Avoid
+            # guessing whether one of them is a vehicle outlier as well.
+            return
+        vehicles.append(race_type)
+
+    counts = {vehicle: vehicles.count(vehicle) for vehicle in set(vehicles)}
+    majority = next(
+        (vehicle for vehicle, count in counts.items() if count == len(waypoints) - 1),
+        None,
+    )
+    outliers = [index for index, vehicle in enumerate(vehicles) if vehicle != majority]
+    if majority is None or len(outliers) != 1:
+        return
+
+    outlier_index = outliers[0]
+    outlier = vehicles[outlier_index]
+    _issue(
+        issues,
+        Severity.WARNING,
+        f"Waypoint {outlier_index + 1} uses {RACE_TYPE_VEHICLE_LABELS[outlier]} while "
+        f"the other {len(waypoints) - 1} waypoints use "
+        f"{RACE_TYPE_VEHICLE_LABELS[majority]}. This single vehicle-type difference "
+        "may be accidental.",
+        waypoints[outlier_index],
+        "PlayerState",
+    )
+
+
 def validate_document(document: EventDocument) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     for node in document.nodes:
@@ -409,6 +455,8 @@ def validate_document(document: EventDocument) -> list[ValidationIssue]:
             start_section,
             "PlayerState",
         )
+
+    _warn_for_waypoint_vehicle_outlier(document, issues)
 
     unknown_fields: dict[str, tuple[str, int, SectionNode]] = {}
     for section in document.sections():

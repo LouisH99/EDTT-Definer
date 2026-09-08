@@ -48,7 +48,7 @@ class FakeUpdateClient(QObject):
 
 
 def test_patch_release_version_is_visible() -> None:
-    assert APP_DISPLAY_NAME == "EDTT Definer v0.5"
+    assert APP_DISPLAY_NAME == "EDTT Definer v0.6.2-dev"
 
 
 def test_new_course_uses_authoring_defaults(qtbot) -> None:

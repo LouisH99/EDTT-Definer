@@ -4,6 +4,8 @@
 
 EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.5**.
 
+> **Development branch:** `v0.6-dev` currently identifies itself as **v0.6.2-dev** and contains the live 3D course-view and race-line recording preview. It is intended for testing and may change before a stable release.
+
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
 ## Screenshots
@@ -62,6 +64,33 @@ Ship conversion preserves an existing ship or SLF flying start. Otherwise it cre
 Only `RaceType` and `PlayerState` are changed. Positions, altitude rules, instructions, conditions, restrictions, waypoint names, advanced entries, and Maximum ship size remain untouched. Review vehicle-specific conditions and Maximum ship size after converting.
 
 The Start section is also checked against Event Info's `RaceType`. A mismatch is shown as a validation warning and must be explicitly confirmed before export, helping catch a race whose vehicle conversion was only partly completed. Flying-start PlayerState choices are offered only for Start and Waypoint 1; imported values elsewhere remain visible and are preserved until changed.
+
+### Live 3D course view
+
+The **Course view** tab shows Start, every valid point or gate, End, route lines, altitude bounds, and—when its System and Body match—the live player position and heading. Start and End always have labels; hover over or select a waypoint to see its name, coordinates, altitude rule, proximity, and PlayerState.
+
+The canvas uses a RaceViz-inspired dark presentation: Start is green, waypoints are yellow, End is blue, and selected checkpoints are light blue. Checkpoint volumes are translucent and retain their true gate width and 1:1 altitude scale. This presentation was adapted with the RaceViz author's explicit permission; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+### Race-line recording
+
+The Course view can record the current vehicle path while Elite Dangerous is running:
+
+1. Select the course body and make sure it has a valid positive `BodyRadius`.
+2. Choose **Record**. Recording waits safely if live surface coordinates are unavailable or belong to another System/Body.
+3. Use **Pause** and **Resume** to create an intentional gap, or **Stop** to finish while keeping the line visible.
+4. Save the result as `*.edtttrace.json` to preserve exact coordinates, timing, segments, and body context. Choose CSV to create a RaceViz-compatible `#Version3` file.
+
+Speed is derived from great-circle surface distance, altitude change, and elapsed recording time. The line is colored from cyan at lower speed through peach to red at the fastest recorded point. Unchanged snapshots are not duplicated, and missing/stale/mismatched data starts a new segment instead of drawing a false straight line. Recording never changes the time-trial project or EDCoPilot TXT output.
+
+**Open trace…** accepts EDTT trace JSON and EDCoPilot/RaceViz `#Version2` or `#Version3` CSV. Because CSV does not contain System or Body names, an imported CSV is associated with the body currently selected in the Course view. Legacy `#Version1` CSV can be opened when the selected course supplies its missing body radius.
+
+Courses are grouped by normalized System and Body. Use the **Body** selector when a definition spans more than one body; choosing a section in the editor automatically selects its body. The visualizer uses the first valid project `BodyRadius` in route order, followed by matching live or locally cached data. Conflicting project radii produce a warning. Without an accurate radius, the view waits instead of inventing a planetary scale.
+
+The default view looks straight down with North up and East right. Enable **Follow ship** to keep the matching live position centered at a 45-degree tilt; the camera rotates with live heading so the vehicle initially points toward the top of the view. Click **Follow ship** again to rotate the following camera another 90 degrees around the vehicle, cycling through side, rear, and opposite-side views. Follow mode waits safely if matching coordinates are temporarily unavailable. Zoom remains available while following, while manual orbit, pan, **Top**, or **Fit** turns following off.
+
+Drag with the left mouse button to orbit freely through 360 degrees around either axis, drag with the right or middle button to pan, and use the mouse wheel to zoom. Double-click Start, a waypoint, or End to select it and center the camera on that checkpoint. **Lock center at 0 m** is enabled by default and places the orbit pivot on the ground directly below the selected checkpoint; disable it to pivot at the checkpoint's actual altitude. **Top** restores the straight-down overview, while **Fit** frames all visible route geometry. The distance scale and altitude geometry use the same physical metre scale without vertical exaggeration.
+
+Choose **Pop out** to move the same live panel into a separate, resizable, non-modal window. **Dock back**, the tab placeholder, or closing the separate window returns it to the main editor. Camera movement, body selection, and docking never modify the course or mark it as changed.
 
 For a manually captured gate, choose **Gate** in the position editor and capture endpoint A and endpoint B separately. Once both endpoints and the body radius are present, the editor displays their great-circle surface distance in metres or kilometres. This measurement is informational and is not added to the EDCoPilot TXT. Altitude is locked against live capture by default, so capturing point B does not replace the rule chosen at point A. Unlock it when live altitude should update a target; the app intentionally does not invent an altitude tolerance.
 
@@ -123,7 +152,7 @@ The normal journal location is detected automatically:
 
 Use **Journal folder…** in the live-location pane if the folder has been redirected. A stale status or “no planetary coordinates” message is normal when the game is closed, at the main menu, or away from a planetary surface.
 
-The application reads `Status.json` for position, body, altitude, and heading. It reads the newest `Journal.*.log` for current system, station, body identifiers, and locally available scan radii. These files are read locally and never modified.
+The application watches `Status.json` and reads it only at startup or when Windows reports a file change. Because Elite replaces the file during updates, EDTT Definer also watches the containing directory and automatically attaches to each replacement. It watches the newest `Journal.*.log` for current system, station, body identifiers, locally available scan radii, and journal rotation. Change bursts are briefly debounced; files are read locally and never modified.
 
 ## Development
 
@@ -142,7 +171,7 @@ After installation, the application can also be started with `edtt-definer` from
 .\build.ps1
 ```
 
-The unsigned v0.5 executable is written to `dist\EDTT-Definer-v0.5.exe`.
+On the `v0.6-dev` branch, the unsigned preview executable is written to `dist\EDTT-Definer-v0.6.2-dev.exe`. Stable release builds use their corresponding versioned filename.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
@@ -152,6 +181,8 @@ The project repository is [LouisH99/EDTT-Definer](https://github.com/LouisH99/ED
 
 - `*.edttc.json` is the versioned, editable project format. Do not import it into EDCoPilot.
 - `*.export.txt` is the validated plain-text EDCoPilot import format.
+- `*.edtttrace.json` is the independent, exact race-line recording format.
+- `*.csv` race-line files use the EDCoPilot/RaceViz trace syntax and can be exchanged with compatible visualization tools.
 
 The application reads Elite Dangerous telemetry locally and does not automate EDCoPilot. It contacts EDSM only after the user permits the optional body-radius fallback described above. When automatic update checks are enabled, it also requests the latest public release metadata from GitHub; no project or game data is sent.
 

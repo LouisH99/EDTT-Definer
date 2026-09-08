@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "edtt-definer"
-version = "0.5.0"
+version = "0.6.2.dev0"
 description = "An unofficial Windows time-trial definition editor for EDCoPilot"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -38,3 +38,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyside6"
+pythonpath = ["src"]

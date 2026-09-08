@@ -5,7 +5,12 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from edtt_definer.live import HAS_LAT_LONG_FLAG, LiveLocationReader, LiveState
+from edtt_definer.live import (
+    HAS_LAT_LONG_FLAG,
+    LiveFileWatcher,
+    LiveLocationReader,
+    LiveState,
+)
 from edtt_definer.radius import BodyRadiusCache
 
 
@@ -202,3 +207,33 @@ def test_journal_rotation_retains_scanned_radius_in_cache(tmp_path: Path) -> Non
 
     assert str(second.snapshot.body_radius_km) == "2500.5"
     assert second.snapshot.body_radius_source == "Local cache"
+
+
+def test_file_watcher_tracks_replaced_status_and_newest_journal(qtbot, tmp_path: Path) -> None:
+    write_status(tmp_path, BodyName="Watcher Body", Latitude=1, Longitude=2)
+    first_journal = tmp_path / "Journal.2026-01-01T000000.01.log"
+    first_journal.write_text("{}\n", encoding="utf-8")
+    os.utime(first_journal, (1, 1))
+    watcher = LiveFileWatcher(tmp_path)
+
+    assert str(tmp_path.resolve()) in watcher.watcher.directories()
+    assert str((tmp_path / "Status.json").resolve()) in watcher.watcher.files()
+    assert str(first_journal.resolve()) in watcher.watcher.files()
+
+    replacement = tmp_path / "Status.next.json"
+    replacement.write_text(
+        json.dumps({"event": "Status", "Flags": HAS_LAT_LONG_FLAG}),
+        encoding="utf-8",
+    )
+    with qtbot.waitSignal(watcher.changed, timeout=3000):
+        os.replace(replacement, tmp_path / "Status.json")
+    watcher.refresh_paths()
+    assert str((tmp_path / "Status.json").resolve()) in watcher.watcher.files()
+
+    second_journal = tmp_path / "Journal.2026-01-02T000000.01.log"
+    with qtbot.waitSignal(watcher.changed, timeout=3000):
+        second_journal.write_text("{}\n", encoding="utf-8")
+    os.utime(second_journal, (2, 2))
+    watcher.refresh_paths()
+    assert str(second_journal.resolve()) in watcher.watcher.files()
+    assert str(first_journal.resolve()) not in watcher.watcher.files()

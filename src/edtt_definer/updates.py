@@ -16,6 +16,9 @@ LATEST_RELEASE_API = (
 )
 REPOSITORY_RELEASE_PATH = "/LouisH99/EDTT-Definer/releases/"
 _VERSION_PATTERN = re.compile(r"^[vV]?(\d+)\.(\d+)(?:\.(\d+))?$")
+_INSTALLED_VERSION_PATTERN = re.compile(
+    r"^[vV]?(\d+)\.(\d+)(?:\.(\d+))?(?:\.dev(\d+))?$"
+)
 
 
 @dataclass(frozen=True)
@@ -82,10 +85,17 @@ def parse_release_payload(payload: bytes | str) -> ReleaseInfo:
 
 
 def is_newer_release(release: ReleaseInfo, current_version: str = __version__) -> bool:
-    current = parse_version_tag(current_version)
-    if current is None:
+    match = _INSTALLED_VERSION_PATTERN.fullmatch(current_version.strip())
+    if match is None:
         return False
-    return release.version > current
+    major, minor, patch, development = match.groups()
+    installed = (
+        int(major),
+        int(minor),
+        int(patch or 0),
+        -1 if development is not None else 0,
+    )
+    return (*release.version, 0) > installed
 
 
 class GitHubUpdateClient(QObject):
@@ -122,7 +132,7 @@ class GitHubUpdateClient(QObject):
         try:
             if reply.error() != QNetworkReply.NetworkError.NoError:
                 status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
-                remaining = bytes(reply.rawHeader(b"X-RateLimit-Remaining"))
+                remaining = bytes(reply.rawHeader("X-RateLimit-Remaining"))
                 if status == 403 and remaining == b"0":
                     self.failed.emit("GitHub's update-check rate limit has been reached. Try again later.")
                 else:

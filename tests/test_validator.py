@@ -77,6 +77,63 @@ def test_matching_race_type_and_start_have_no_vehicle_warning() -> None:
     ]
 
 
+def test_single_waypoint_vehicle_outlier_is_a_warning() -> None:
+    document = parse_text(SAMPLE)
+    document.add_waypoint("Ship")
+    outlier = document.add_waypoint("SRV")
+
+    matching_issues = [
+        issue for issue in validate_document(document)
+        if "single vehicle-type difference" in issue.message
+    ]
+
+    assert len(matching_issues) == 1
+    assert matching_issues[0].severity is Severity.WARNING
+    assert matching_issues[0].section_id == outlier.node_id
+    assert matching_issues[0].field == "PlayerState"
+    assert "Waypoint 3 uses SRV" in matching_issues[0].message
+    assert "other 2 waypoints use Ship" in matching_issues[0].message
+
+
+def test_ship_and_fighter_player_state_variants_share_vehicle_types() -> None:
+    document = parse_text(SAMPLE)
+    document.add_waypoint("ShipFlyingStart")
+    document.add_waypoint("Ship")
+
+    assert not [
+        issue for issue in validate_document(document)
+        if "single vehicle-type difference" in issue.message
+    ]
+
+    for waypoint, player_state in zip(
+        document.sections(SectionType.WAYPOINT),
+        ("FighterFlyingStart", "Fighter", "Fighter"),
+        strict=True,
+    ):
+        waypoint.set_value("PlayerState", player_state)
+
+    assert not [
+        issue for issue in validate_document(document)
+        if "single vehicle-type difference" in issue.message
+    ]
+
+
+def test_waypoint_vehicle_outlier_requires_clear_three_waypoint_pattern() -> None:
+    document = parse_text(SAMPLE)
+    document.add_waypoint("SRV")
+    assert not [
+        issue for issue in validate_document(document)
+        if "single vehicle-type difference" in issue.message
+    ]
+
+    document.add_waypoint("Ship")
+    document.add_waypoint("OnFoot")
+    assert not [
+        issue for issue in validate_document(document)
+        if "single vehicle-type difference" in issue.message
+    ]
+
+
 def test_gate_rejects_incomplete_second_endpoint() -> None:
     document = parse_text(SAMPLE)
     waypoint = document.sections(SectionType.WAYPOINT)[0]

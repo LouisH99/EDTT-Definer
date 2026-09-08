@@ -139,9 +139,68 @@ HELP_TEXT = {
     "move_up": "Move the selected waypoint one place earlier while keeping its comments, unknown entries, and metadata together.",
     "move_down": "Move the selected waypoint one place later while keeping its comments, unknown entries, and metadata together.",
     "capture_selected": "Fill the selected Start, Waypoint, or End from valid live surface coordinates without exporting.",
-    "journal_folder": "Override the automatically detected Elite Dangerous Saved Games journal folder.",
+    "journal_folder": (
+        "Override the automatically detected Elite Dangerous Saved Games journal folder. EDTT Definer "
+        "watches this directory, Status.json, and the newest journal and reads them only after changes."
+    ),
     "validation": "Double-click an issue to select its section and reveal a collapsed area containing the problem.",
     "preview": "Read-only preview of the exact EDCoPilot TXT that Create EDCoPilot TXT will write.",
+    "course_body": (
+        "Choose which System and Body to display. Stages on different bodies cannot share one accurate "
+        "coordinate space, so the course view shows one body group at a time."
+    ),
+    "course_follow": (
+        "Keep the matching live ship or SRV position centered with a 45-degree camera tilt. The camera "
+        "rotates with live heading so the vehicle initially points toward the top. Click Follow ship again "
+        "to rotate the camera another 90 degrees around the vehicle while continuing to follow. Zoom remains "
+        "available; orbiting, panning, Top, or Fit turns follow mode off. If live data is unavailable, follow "
+        "waits for it."
+    ),
+    "course_center_height_lock": (
+        "Keep the camera's orbit center on ground level at 0 metres. This is enabled by default. When "
+        "disabled, double-clicking a checkpoint centers the orbit at that checkpoint's actual altitude, "
+        "and Fit uses the course's vertical midpoint."
+    ),
+    "course_top": (
+        "Turn off ship following, return to the straight-down course overview with North up, and fit the "
+        "route to the window."
+    ),
+    "course_fit": (
+        "Turn off ship following and fit all visible checkpoints and the live marker into the current camera angle."
+    ),
+    "course_popout": "Move the course view from the editor tab into a separate resizable window.",
+    "course_dock": "Return the separate course view to its tab in the main editor.",
+    "course_status": (
+        "Shows the selected body, radius source, true 1:1 altitude scale, and any stages skipped because "
+        "their coordinates are incomplete or invalid."
+    ),
+    "course_canvas": (
+        "Interactive true-scale 3D course overview. Left-drag rotates freely through 360 degrees around "
+        "both axes, right- or middle-drag pans, and the "
+        "mouse wheel zooms. Manual orbit or pan stops Follow ship. Click a checkpoint to select it in the "
+        "editor, or double-click it to select it and make it the camera's orbit center. Keyboard: arrows "
+        "pan, plus/minus zoom, T returns to Top, and F fits the view."
+    ),
+    "trace_record": (
+        "Start a new live race-line recording for the body currently shown. This replaces any loaded "
+        "trace after confirmation, samples valid Status.json positions, and derives speed from distance "
+        "and elapsed time. A positive BodyRadius is required."
+    ),
+    "trace_pause": (
+        "Pause or resume live race-line recording. Resuming begins a new line segment so unavailable or "
+        "paused movement is never joined by a misleading straight line."
+    ),
+    "trace_stop": "Stop sampling live positions while keeping the recorded line visible for review or saving.",
+    "trace_clear": "Remove the displayed race line after confirmation. This does not change the course project.",
+    "trace_open": (
+        "Open an EDTT *.edtttrace.json recording or an EDCoPilot/RaceViz #Version2/#Version3 CSV trace. "
+        "Trace files are independent from editable course projects."
+    ),
+    "trace_save": (
+        "Save the displayed race line as exact, editable *.edtttrace.json or export a RaceViz-compatible "
+        "#Version3 CSV. CSV stores less context than the EDTT trace format."
+    ),
+    "trace_status": "Shows trace recording state, point/segment count, live-data waits, and unsaved status.",
     "action_new": "Create a new blank time-trial project after confirming any unsaved changes.",
     "action_open": "Open an editable EDTT project or an existing EDCoPilot TXT definition.",
     "action_save": "Save the editable project, including editor-only names and capture metadata.",
