@@ -10,6 +10,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from PySide6.QtCore import QFileSystemWatcher, QObject, Signal
+
 from .radius import BodyRadiusCache, RadiusRecord, normalize_name, positive_decimal
 
 
@@ -87,6 +89,74 @@ class LiveResult:
     state: LiveState
     snapshot: LocationSnapshot | None
     message: str
+
+
+class LiveFileWatcher(QObject):
+    """Watch Elite's replace-on-write Status file and newest journal safely."""
+
+    changed = Signal()
+
+    def __init__(
+        self, journal_directory: str | Path | None = None, parent: QObject | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.journal_directory = (
+            Path(journal_directory) if journal_directory else default_journal_directory()
+        )
+        self.watcher = QFileSystemWatcher(self)
+        self.watcher.fileChanged.connect(self._source_changed)
+        self.watcher.directoryChanged.connect(self._source_changed)
+        self.refresh_paths()
+
+    @property
+    def status_path(self) -> Path:
+        return self.journal_directory / "Status.json"
+
+    def set_journal_directory(self, path: str | Path) -> None:
+        existing = self.watcher.files() + self.watcher.directories()
+        if existing:
+            self.watcher.removePaths(existing)
+        self.journal_directory = Path(path)
+        self.refresh_paths()
+        self.changed.emit()
+
+    def _latest_journal(self) -> Path | None:
+        try:
+            files = list(self.journal_directory.glob("Journal.*.log"))
+            return max(files, key=lambda item: item.stat().st_mtime, default=None)
+        except OSError:
+            return None
+
+    def refresh_paths(self) -> None:
+        desired_files: set[str] = set()
+        desired_directories: set[str] = set()
+        if self.journal_directory.is_dir():
+            desired_directories.add(str(self.journal_directory.resolve()))
+        if self.status_path.is_file():
+            desired_files.add(str(self.status_path.resolve()))
+        journal = self._latest_journal()
+        if journal is not None:
+            desired_files.add(str(journal.resolve()))
+
+        current_files = set(self.watcher.files())
+        current_directories = set(self.watcher.directories())
+        remove = list(
+            (current_files - desired_files) | (current_directories - desired_directories)
+        )
+        if remove:
+            self.watcher.removePaths(remove)
+        add = list(
+            (desired_files - current_files) | (desired_directories - current_directories)
+        )
+        if add:
+            self.watcher.addPaths(add)
+
+    def _source_changed(self, _path: str) -> None:
+        # Elite replaces Status.json instead of updating it in place, which
+        # drops a file watch on Windows. The directory watch remains and lets
+        # us attach to the replacement immediately.
+        self.refresh_paths()
+        self.changed.emit()
 
 
 def default_journal_directory() -> Path:

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from edtt_definer.updates import (
+    ReleaseInfo,
     is_newer_release,
     is_trusted_release_url,
     parse_release_payload,
@@ -41,6 +42,36 @@ def test_release_payload_and_version_comparison() -> None:
     assert release.title == "EDTT Definer v0.5.1"
     assert is_newer_release(release, "0.5.0")
     assert not is_newer_release(release, "v0.5.1")
+
+
+def test_stable_release_is_newer_than_matching_development_build() -> None:
+    release = parse_release_payload(
+        json.dumps(
+            {
+                "tag_name": "v0.6",
+                "name": "EDTT Definer v0.6",
+                "html_url": "https://github.com/LouisH99/EDTT-Definer/releases/tag/v0.6",
+            }
+        )
+    )
+
+    assert is_newer_release(release, "0.6.0.dev0")
+    assert not is_newer_release(release, "0.6.0")
+    assert not is_newer_release(release, "0.7.0.dev0")
+
+
+def test_patch_development_build_waits_for_matching_stable_patch() -> None:
+    v06 = ReleaseInfo(
+        "v0.6", (0, 6, 0),
+        "https://github.com/LouisH99/EDTT-Definer/releases/tag/v0.6", "v0.6",
+    )
+    v061 = ReleaseInfo(
+        "v0.6.1", (0, 6, 1),
+        "https://github.com/LouisH99/EDTT-Definer/releases/tag/v0.6.1", "v0.6.1",
+    )
+
+    assert not is_newer_release(v06, "0.6.1.dev0")
+    assert is_newer_release(v061, "0.6.1.dev0")
 
 
 @pytest.mark.parametrize(

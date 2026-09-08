@@ -1,9 +1,15 @@
 param(
-    [string]$Name = "EDTT-Definer-v0.5"
+    [string]$Name = "EDTT-Definer-v0.6.2-dev"
 )
 
 $ErrorActionPreference = "Stop"
 $Python = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $Python)) {
+    $Python = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "venv\Scripts\python.exe"
+}
+if (-not (Test-Path -LiteralPath $Python)) {
+    throw "Python environment not found. Create .\venv or use the development workspace venv."
+}
 $PreviousExecutableName = $env:EDTT_EXE_NAME
 
 try {

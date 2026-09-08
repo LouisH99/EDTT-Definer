@@ -47,10 +47,17 @@ from .conversion import (
     build_vehicle_conversion,
     conversion_preview,
 )
+from .course_view import CourseViewPanel
 from .edsm import EdsmRadiusClient
 from .geometry import calculate_gate, great_circle_distance_m, spherical_midpoint
 from .help_text import HELP_TEXT, PLAYER_STATE_ITEM_HELP, set_help, set_help_text
-from .live import LiveLocationReader, LiveResult, LiveState, LocationSnapshot
+from .live import (
+    LiveFileWatcher,
+    LiveLocationReader,
+    LiveResult,
+    LiveState,
+    LocationSnapshot,
+)
 from .model import (
     EntryKind,
     EventDocument,
@@ -73,6 +80,14 @@ from .project import (
 )
 from .radius import BodyRadiusCache, normalize_name
 from .theme import ThemeMode, apply_theme, semantic_color
+from .trace import (
+    TraceRecorder,
+    TraceState,
+    load_trace_csv,
+    load_trace_json,
+    save_trace_csv,
+    save_trace_json,
+)
 from .updates import GitHubUpdateClient, ReleaseInfo, is_newer_release
 from .validator import (
     KNOWN_FIELDS,
@@ -88,8 +103,13 @@ from .widgets import CollapsibleSection, DelayedTooltipFilter
 
 APP_NAME = "EDTT Definer"
 SETTINGS_APP_NAME = "Elite Dangerous Time Trial Creator"
-_version_parts = __version__.split(".")
-DISPLAY_VERSION = ".".join(_version_parts[:2] if _version_parts[2:] == ["0"] else _version_parts)
+_version_parts = __version__.removesuffix(".dev0").split(".")
+if __version__.endswith(".dev0"):
+    DISPLAY_VERSION = f"{'.'.join(_version_parts)}-dev"
+else:
+    DISPLAY_VERSION = ".".join(
+        _version_parts[:2] if _version_parts[2:] == ["0"] else _version_parts
+    )
 APP_DISPLAY_NAME = f"{APP_NAME} v{DISPLAY_VERSION}"
 PLAYER_STATES = [
     "Ship", "ShipFlyingStart", "ShipPass", "FighterFlyingStart", "Fighter", "SRV", "OnFoot",
@@ -464,7 +484,8 @@ class AboutDialog(QDialog):
             f'<a href="{REPOSITORY_URL}">GitHub repository</a> &nbsp;•&nbsp; '
             f'<a href="{ISSUES_URL}">Report a bug or request a feature</a><br>'
             f'<a href="{RELEASES_URL}">Releases</a> &nbsp;•&nbsp; '
-            '<a href="https://www.edsm.net/">EDSM</a>'
+            '<a href="https://www.edsm.net/">EDSM</a> &nbsp;•&nbsp; '
+            f'<a href="{REPOSITORY_URL}/blob/main/THIRD_PARTY_NOTICES.md">Third-party notices</a>'
         )
         links.setObjectName("aboutLinks")
         links.setOpenExternalLinks(True)
@@ -472,6 +493,8 @@ class AboutDialog(QDialog):
 
         disclosure = QLabel(
             "Licensed under the MIT License.\n\n"
+            "Course-view presentation is inspired by RaceViz and adapted with the author's explicit "
+            "permission; see THIRD_PARTY_NOTICES.md.\n\n"
             "Network disclosure: automatic update checks contact the public GitHub Releases API and can be "
             "disabled from the Help menu. EDSM is contacted only after permission is given.\n\n"
             "AI development disclosure: This project was “vibe-coded” with OpenAI Codex. "
@@ -493,6 +516,21 @@ class AboutDialog(QDialog):
         layout.addSpacing(8)
         layout.addWidget(disclosure)
         layout.addWidget(buttons)
+
+
+class DetachedCourseWindow(QDialog):
+    dock_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("EDTT Definer — Course view")
+        self.resize(1000, 700)
+        self.content_layout = QVBoxLayout(self)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.dock_requested.emit()
+        event.ignore()
 
 
 class RaceConversionDialog(QDialog):
@@ -1346,6 +1384,7 @@ class MainWindow(QMainWindow):
             self.settings.value("body_radius_cache", "", str)
         )
         self.live_reader = LiveLocationReader(configured_dir or None, radius_cache=radius_cache)
+        self.live_watcher = LiveFileWatcher(self.live_reader.journal_directory, self)
         self.edsm_client = edsm_client or EdsmRadiusClient(self)
         self.edsm_client.succeeded.connect(self._edsm_radius_succeeded)
         self.edsm_client.failed.connect(self._edsm_radius_failed)
@@ -1358,11 +1397,14 @@ class MainWindow(QMainWindow):
         self._radius_prompted: set[tuple[str, str]] = set()
         self._radius_lookup_attempted: set[tuple[str, str]] = set()
         self.live_result = LiveResult(LiveState.MISSING, None, "Waiting for game data.")
+        self.trace_recorder = TraceRecorder()
         self.project = ProjectData.new()
         self.project_path: Path | None = None
         self.dirty = False
         self.current_section_id: str | None = None
         self.recent_menu = None
+        self.course_window: DetachedCourseWindow | None = None
+        self._course_detached = False
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.resize(1480, 880)
         self._build_actions()
@@ -1375,10 +1417,18 @@ class MainWindow(QMainWindow):
         )
         self._restore_settings()
         self._set_project(ProjectData.new(), None, dirty=False)
-        self.poll_timer = QTimer(self)
-        self.poll_timer.setInterval(750)
-        self.poll_timer.timeout.connect(self._poll_live)
-        self.poll_timer.start()
+        self.live_change_timer = QTimer(self)
+        self.live_change_timer.setSingleShot(True)
+        self.live_change_timer.setInterval(40)
+        self.live_change_timer.timeout.connect(self._scheduled_live_update)
+        self.live_watcher.changed.connect(self.live_change_timer.start)
+        # Compatibility alias for existing UI extensions and tests. It is a
+        # one-shot filesystem-change debounce, not a polling timer.
+        self.poll_timer = self.live_change_timer
+        self.live_stale_timer = QTimer(self)
+        self.live_stale_timer.setSingleShot(True)
+        self.live_stale_timer.timeout.connect(self._mark_live_stale)
+        self.live_change_timer.start()
         self.update_timer = QTimer(self)
         self.update_timer.setSingleShot(True)
         self.update_timer.timeout.connect(self._automatic_update_check)
@@ -1549,6 +1599,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(live_box)
 
         tabs = QTabWidget()
+        self.right_tabs = tabs
         self.validation_list = QListWidget()
         self.validation_list.itemDoubleClicked.connect(self._jump_to_issue)
         set_help(self.validation_list, "validation")
@@ -1558,6 +1609,35 @@ class MainWindow(QMainWindow):
         set_help(self.preview, "preview")
         tabs.addTab(self.validation_list, "Validation")
         tabs.addTab(self.preview, "File preview")
+        self.course_page = QWidget()
+        self.course_page_layout = QVBoxLayout(self.course_page)
+        self.course_page_layout.setContentsMargins(0, 0, 0, 0)
+        self.course_view = CourseViewPanel()
+        self.course_view.stage_selected.connect(self._select_section_from_course)
+        self.course_view.pop_out_requested.connect(self._toggle_course_view_window)
+        self.course_view.trace_record_requested.connect(self.start_trace_recording)
+        self.course_view.trace_pause_requested.connect(self.toggle_trace_pause)
+        self.course_view.trace_stop_requested.connect(self.stop_trace_recording)
+        self.course_view.trace_clear_requested.connect(self.clear_trace)
+        self.course_view.trace_open_requested.connect(self.open_trace)
+        self.course_view.trace_save_requested.connect(self.save_trace)
+        self.course_page_layout.addWidget(self.course_view, 1)
+        self.course_placeholder = QWidget()
+        placeholder_layout = QVBoxLayout(self.course_placeholder)
+        placeholder_layout.addStretch(1)
+        placeholder_label = QLabel("Course view is open in a separate window.")
+        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder_layout.addWidget(placeholder_label)
+        self.course_dock_button = QPushButton("Dock course view")
+        self.course_dock_button.clicked.connect(self._dock_course_view)
+        set_help(self.course_dock_button, "course_dock")
+        placeholder_layout.addWidget(
+            self.course_dock_button, 0, Qt.AlignmentFlag.AlignHCenter
+        )
+        placeholder_layout.addStretch(1)
+        self.course_placeholder.setVisible(False)
+        self.course_page_layout.addWidget(self.course_placeholder, 1)
+        tabs.addTab(self.course_page, "Course view")
         right_layout.addWidget(tabs, 1)
 
         splitter.addWidget(left)
@@ -1597,12 +1677,14 @@ class MainWindow(QMainWindow):
         self._apply_theme_styles()
         self.refresh_validation_and_preview()
         self._refresh_live_status_style()
+        self.course_view.refresh_theme()
 
     def _system_color_scheme_changed(self, *_args) -> None:
         if self.theme_mode is ThemeMode.SYSTEM:
             self._apply_theme_styles()
             self.refresh_validation_and_preview()
             self._refresh_live_status_style()
+            self.course_view.refresh_theme()
 
     def _apply_theme_styles(self) -> None:
         error = semantic_color("error", self).name()
@@ -1625,10 +1707,24 @@ class MainWindow(QMainWindow):
             self.restoreState(state)
 
     def _set_project(self, project: ProjectData, path: Path | None, *, dirty: bool) -> None:
+        self.trace_recorder.clear()
         self.project = project
         self.project_path = path
         self.dirty = dirty
         self.refresh_navigation()
+        live_snapshot = (
+            self.live_result.snapshot
+            if self.live_result.state is LiveState.LIVE
+            else None
+        )
+        self.course_view.set_project(
+            project,
+            selected_section_id=self.current_section_id,
+            live_snapshot=live_snapshot,
+            radius_cache=self.live_reader.radius_cache,
+        )
+        self.course_view.set_trace(self.trace_recorder.trace)
+        self._refresh_trace_status()
         self.refresh_validation_and_preview()
         self._update_title()
 
@@ -1706,6 +1802,7 @@ class MainWindow(QMainWindow):
             )
             self.form_stack.setCurrentIndex(1)
         self._update_capture_buttons()
+        self.course_view.set_selected_section(node_id)
         self._update_collapsible_validation(
             getattr(self, "validation_issues", validate_project(self.project))
         )
@@ -1767,6 +1864,10 @@ class MainWindow(QMainWindow):
                 item.setForeground(semantic_color("warning", self))
             self.validation_list.addItem(item)
         self.preview.setPlainText(serialize_document(self.project.document))
+        if hasattr(self, "course_view"):
+            self.course_view.refresh_project(
+                self.project, selected_section_id=self.current_section_id
+            )
         self.statusBar().showMessage(f"{errors} error(s), {warnings} warning(s)")
         self._update_collapsible_validation(issues)
 
@@ -1845,6 +1946,53 @@ class MainWindow(QMainWindow):
         name = self.project_path.name if self.project_path else "Untitled"
         marker = "*" if self.dirty else ""
         self.setWindowTitle(f"{marker}{name} — {APP_DISPLAY_NAME}")
+        if hasattr(self, "course_window") and self.course_window is not None:
+            self.course_window.setWindowTitle(
+                f"{name} — EDTT Definer Course view"
+            )
+
+    def _select_section_from_course(self, section_id: str) -> None:
+        for row in range(self.navigation.count()):
+            item = self.navigation.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == section_id:
+                self.navigation.setCurrentRow(row)
+                return
+
+    def _toggle_course_view_window(self) -> None:
+        if self._course_detached:
+            self._dock_course_view()
+        else:
+            self._pop_out_course_view()
+
+    def _pop_out_course_view(self) -> None:
+        if self._course_detached:
+            if self.course_window is not None:
+                self.course_window.show()
+                self.course_window.raise_()
+                self.course_window.activateWindow()
+            return
+        if getattr(self, "course_window", None) is None:
+            self.course_window = DetachedCourseWindow(self)
+            self.course_window.dock_requested.connect(self._dock_course_view)
+        self.course_page_layout.removeWidget(self.course_view)
+        self.course_window.content_layout.addWidget(self.course_view)
+        self.course_placeholder.setVisible(True)
+        self.course_view.set_detached(True)
+        self.course_window.show()
+        self.course_window.raise_()
+        self.course_window.activateWindow()
+        self._course_detached = True
+
+    def _dock_course_view(self) -> None:
+        window = getattr(self, "course_window", None)
+        if window is None or not self._course_detached:
+            return
+        window.content_layout.removeWidget(self.course_view)
+        self.course_page_layout.insertWidget(0, self.course_view, 1)
+        self.course_placeholder.setVisible(False)
+        self.course_view.set_detached(False)
+        window.hide()
+        self._course_detached = False
 
     def _choose_vehicle_conversion(self) -> VehicleConversionPlan | None:
         dialog = RaceConversionDialog(self.project.document, self)
@@ -1953,6 +2101,156 @@ class MainWindow(QMainWindow):
         self.about_dialog = AboutDialog(self)
         self.about_dialog.show()
 
+    def _refresh_trace_status(self) -> None:
+        self.course_view.set_trace_status(
+            self.trace_recorder.state,
+            self.trace_recorder.status,
+            self.trace_recorder.dirty,
+        )
+
+    def _confirm_trace_discard(self) -> bool:
+        if not self.trace_recorder.dirty:
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Unsaved race line")
+        box.setText("The recorded race line has not been saved.")
+        box.setInformativeText(
+            "Save it as an EDTT trace or CSV before replacing or closing it?"
+        )
+        save_button = box.addButton("Save trace…", QMessageBox.ButtonRole.AcceptRole)
+        discard_button = box.addButton(QMessageBox.StandardButton.Discard)
+        cancel_button = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_button:
+            return self.save_trace()
+        if clicked is discard_button:
+            return True
+        return False
+
+    def start_trace_recording(self) -> None:
+        if not self._confirm_trace_discard():
+            return
+        group = self.course_view.current_body_group
+        radius = self.course_view.current_radius_km
+        if group is None or radius is None:
+            QMessageBox.warning(
+                self,
+                "Cannot record race line",
+                "Select a course body with a valid positive BodyRadius before recording.",
+            )
+            return
+        try:
+            self.trace_recorder.start(
+                system=group.system_name,
+                body=group.body_name,
+                radius_km=radius,
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Cannot record race line", str(exc))
+            return
+        self.course_view.set_trace(self.trace_recorder.trace)
+        snapshot = (
+            self.live_result.snapshot
+            if self.live_result.state is LiveState.LIVE
+            else None
+        )
+        if self.trace_recorder.consume(snapshot):
+            self.course_view.set_trace(self.trace_recorder.trace)
+        self._refresh_trace_status()
+        self.statusBar().showMessage("Race-line recording started.", 5000)
+
+    def toggle_trace_pause(self) -> None:
+        if self.trace_recorder.state is TraceState.RECORDING:
+            self.trace_recorder.pause()
+        elif self.trace_recorder.state is TraceState.PAUSED:
+            self.trace_recorder.resume()
+        self._refresh_trace_status()
+
+    def stop_trace_recording(self) -> None:
+        self.trace_recorder.stop()
+        self._refresh_trace_status()
+        self.statusBar().showMessage("Race-line recording stopped.", 5000)
+
+    def clear_trace(self) -> None:
+        if not self._confirm_trace_discard():
+            return
+        self.trace_recorder.clear()
+        self.course_view.set_trace(self.trace_recorder.trace)
+        self._refresh_trace_status()
+
+    def open_trace(self, path: str | None = None) -> None:
+        if not self._confirm_trace_discard():
+            return
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Open race line",
+                "",
+                "Race-line files (*.edtttrace.json *.csv);;EDTT trace (*.edtttrace.json);;"
+                "EDCoPilot / RaceViz trace (*.csv);;All files (*)",
+            )
+        if not path:
+            return
+        source = Path(path)
+        try:
+            if source.name.casefold().endswith(".edtttrace.json"):
+                trace = load_trace_json(source)
+            else:
+                trace = load_trace_csv(
+                    source, fallback_radius_km=self.course_view.current_radius_km
+                )
+                group = self.course_view.current_body_group
+                if group is not None:
+                    # EDCoPilot CSV has no System/Body columns. Bind it to the
+                    # body selected by the author so it can be projected safely.
+                    trace.system = group.system_name
+                    trace.body = group.body_name
+            self.trace_recorder.replace(trace, dirty=False)
+            self.course_view.set_trace(trace)
+            self._refresh_trace_status()
+            self.statusBar().showMessage(f"Opened race line {source}", 7000)
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Open race line failed", f"Could not open the trace:\n{exc}"
+            )
+
+    def save_trace(self, path: str | None = None) -> bool:
+        if self.trace_recorder.trace.point_count == 0:
+            QMessageBox.information(self, "No race line", "There is no race line to save.")
+            return False
+        if path is None:
+            path, selected_filter = QFileDialog.getSaveFileName(
+                self,
+                "Save race line",
+                "",
+                "EDTT trace (*.edtttrace.json);;RaceViz / EDCoPilot CSV (*.csv)",
+            )
+        else:
+            selected_filter = ""
+        if not path:
+            return False
+        try:
+            if path.casefold().endswith(".csv") or "CSV" in selected_filter:
+                if not path.casefold().endswith(".csv"):
+                    path += ".csv"
+                save_trace_csv(self.trace_recorder.trace, path)
+            else:
+                if not path.casefold().endswith(".edtttrace.json"):
+                    path += ".edtttrace.json"
+                save_trace_json(self.trace_recorder.trace, path)
+            self.trace_recorder.mark_saved()
+            self._refresh_trace_status()
+            self.statusBar().showMessage(f"Saved race line {path}", 7000)
+            return True
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Save race line failed", f"Could not save the trace:\n{exc}"
+            )
+            return False
+
     def _confirm_discard(self) -> bool:
         if not self.dirty:
             return True
@@ -1964,11 +2262,13 @@ class MainWindow(QMainWindow):
         return result == QMessageBox.StandardButton.Discard
 
     def new_project(self) -> None:
-        if self._confirm_discard():
+        if self._confirm_discard() and self._confirm_trace_discard():
             self._set_project(ProjectData.new(), None, dirty=False)
 
     def open_file(self, path: str | None = None) -> None:
         if not self._confirm_discard():
+            return
+        if not self._confirm_trace_discard():
             return
         if path is None:
             path, _ = QFileDialog.getOpenFileName(
@@ -2153,9 +2453,35 @@ class MainWindow(QMainWindow):
             self.refresh_validation_and_preview()
             self._update_title()
 
-    def _poll_live(self) -> None:
-        self.live_result = self.live_reader.poll()
-        result = self.live_result
+    def _scheduled_live_update(self) -> None:
+        # Hidden MainWindow instances are used by interaction tests and by some
+        # embedders while they configure the editor. Avoid live-data prompts or
+        # mutations until the actual application window is visible.
+        if self.isVisible():
+            self._pull_live_update()
+
+    def _pull_live_update(self) -> None:
+        result = self.live_reader.poll()
+        self.live_watcher.refresh_paths()
+        if result.state is LiveState.LIVE:
+            self.live_stale_timer.start(max(1000, round(self.live_reader.stale_after * 1000)))
+        else:
+            self.live_stale_timer.stop()
+        self._display_live_result(result)
+
+    def _mark_live_stale(self) -> None:
+        if self.live_result.state is not LiveState.LIVE:
+            return
+        self._display_live_result(
+            LiveResult(
+                LiveState.STALE,
+                self.live_result.snapshot,
+                "No Status.json change has been detected recently; retaining the last valid reading.",
+            )
+        )
+
+    def _display_live_result(self, result: LiveResult) -> None:
+        self.live_result = result
         self.live_status.setText(result.message)
         self._refresh_live_status_style()
         snapshot = result.snapshot
@@ -2169,6 +2495,16 @@ class MainWindow(QMainWindow):
         self._persist_radius_cache()
         if snapshot is not None:
             self._consider_radius_for_selected(snapshot)
+        trace_snapshot = snapshot if result.state is LiveState.LIVE else None
+        trace_changed = self.trace_recorder.consume(trace_snapshot)
+        self.course_view.set_live_snapshot(
+            trace_snapshot
+        )
+        if trace_changed:
+            # The panel holds the same mutable RaceTrace, but explicitly setting
+            # it keeps this contract clear for alternate panel implementations.
+            self.course_view.set_trace(self.trace_recorder.trace)
+        self._refresh_trace_status()
         self._update_capture_buttons()
 
     def _refresh_live_status_style(self) -> None:
@@ -2676,8 +3012,8 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Choose Elite Dangerous journal folder", str(self.live_reader.journal_directory))
         if path:
             self.live_reader.set_journal_directory(path)
+            self.live_watcher.set_journal_directory(path)
             self.settings.setValue("journal_directory", path)
-            self._poll_live()
 
     def _recent_paths(self) -> list[str]:
         value = self.settings.value("recent_files", [], list)
@@ -2707,6 +3043,11 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             event.ignore()
             return
+        if not self._confirm_trace_discard():
+            event.ignore()
+            return
+        self.trace_recorder.stop()
+        self._dock_course_view()
         self.settings.setValue("window_geometry", self.saveGeometry())
         self.settings.setValue("window_state", self.saveState())
         self._persist_radius_cache()
