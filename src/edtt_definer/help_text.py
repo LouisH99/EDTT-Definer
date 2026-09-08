@@ -131,13 +131,23 @@ HELP_TEXT = {
     ),
     "list_add": "Add a new entry, or replace the currently selected entry with the edited value.",
     "list_remove": "Remove the selected repeated entry from this section.",
-    "navigation": "Select Event Info, Start, a numbered Waypoint, or End to edit it in the centre pane.",
+    "navigation": (
+        "Select Event Info, Start, a numbered Waypoint, or End to edit it in the centre pane. "
+        "Hold Ctrl to select separate waypoints or Shift to select a range for grouped duplicate, "
+        "delete, and move actions. The active item remains the only one edited by the form."
+    ),
     "add_waypoint": "Add a new waypoint after the existing waypoints, inheriting the previous maximum height when available.",
     "capture_add": "Create a waypoint and fill its coordinates and available location context from live game data.",
-    "duplicate_waypoint": "Duplicate the selected waypoint, including its editor-only name, altitude mode, lock, and capture metadata.",
-    "delete_waypoint": "Delete the selected waypoint and its editor-only metadata. At least one waypoint must remain.",
-    "move_up": "Move the selected waypoint one place earlier while keeping its comments, unknown entries, and metadata together.",
-    "move_down": "Move the selected waypoint one place later while keeping its comments, unknown entries, and metadata together.",
+    "duplicate_waypoint": (
+        "Duplicate all selected waypoints as one route-ordered group immediately after the last selected "
+        "waypoint. Names, altitude settings, comments, unknown entries, and capture metadata are copied."
+    ),
+    "delete_waypoint": (
+        "Delete all selected waypoints and their editor-only metadata. Multiple deletions require "
+        "confirmation, and at least one waypoint must remain."
+    ),
+    "move_up": "Move all selected waypoints one place earlier while preserving their relative order and complete data.",
+    "move_down": "Move all selected waypoints one place later while preserving their relative order and complete data.",
     "capture_selected": "Fill the selected Start, Waypoint, or End from valid live surface coordinates without exporting.",
     "journal_folder": (
         "Override the automatically detected Elite Dangerous Saved Games journal folder. EDTT Definer "

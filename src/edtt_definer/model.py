@@ -369,15 +369,31 @@ class EventDocument:
         return section
 
     def duplicate_waypoint(self, node_id: str) -> SectionNode | None:
-        source = self.section_by_id(node_id)
-        if source is None or source.section_type is not SectionType.WAYPOINT:
-            return None
-        duplicate = deepcopy(source)
-        duplicate.node_id = uuid4().hex
-        index = self.nodes.index(source)
-        self.nodes.insert(index + 1, RawNode(""))
-        self.nodes.insert(index + 2, duplicate)
-        return duplicate
+        duplicates = self.duplicate_waypoints([node_id])
+        return duplicates[0] if duplicates else None
+
+    def duplicate_waypoints(self, node_ids: Iterable[str]) -> list[SectionNode]:
+        """Duplicate selected waypoints as one route-ordered group."""
+        selected_ids = set(node_ids)
+        sources = [
+            waypoint
+            for waypoint in self.sections(SectionType.WAYPOINT)
+            if waypoint.node_id in selected_ids
+        ]
+        if not sources:
+            return []
+
+        duplicates: list[SectionNode] = []
+        inserted_nodes: list[TopNode] = []
+        for source in sources:
+            duplicate = deepcopy(source)
+            duplicate.node_id = uuid4().hex
+            duplicates.append(duplicate)
+            inserted_nodes.extend((RawNode(""), duplicate))
+
+        anchor_index = self.nodes.index(sources[-1])
+        self.nodes[anchor_index + 1:anchor_index + 1] = inserted_nodes
+        return duplicates
 
     def remove_waypoint(self, node_id: str) -> bool:
         section = self.section_by_id(node_id)
@@ -392,16 +408,37 @@ class EventDocument:
         return True
 
     def move_waypoint(self, node_id: str, direction: int) -> bool:
+        return self.move_waypoints([node_id], direction)
+
+    def move_waypoints(self, node_ids: Iterable[str], direction: int) -> bool:
+        """Move selected waypoints one route position while retaining their order."""
+        if direction not in {-1, 1}:
+            return False
         waypoints = self.sections(SectionType.WAYPOINT)
-        current = next((index for index, item in enumerate(waypoints) if item.node_id == node_id), None)
-        if current is None:
+        selected_ids = set(node_ids)
+        selected = {
+            index for index, waypoint in enumerate(waypoints)
+            if waypoint.node_id in selected_ids
+        }
+        if not selected:
             return False
-        target = current + direction
-        if target < 0 or target >= len(waypoints):
+
+        reordered = list(waypoints)
+        moved = False
+        indexes = range(1, len(reordered)) if direction < 0 else range(len(reordered) - 2, -1, -1)
+        for index in indexes:
+            neighbor = index - 1 if direction < 0 else index + 1
+            if index in selected and neighbor not in selected:
+                reordered[index], reordered[neighbor] = reordered[neighbor], reordered[index]
+                selected.remove(index)
+                selected.add(neighbor)
+                moved = True
+        if not moved:
             return False
-        first = self.nodes.index(waypoints[current])
-        second = self.nodes.index(waypoints[target])
-        self.nodes[first], self.nodes[second] = self.nodes[second], self.nodes[first]
+
+        waypoint_slots = [self.nodes.index(waypoint) for waypoint in waypoints]
+        for slot, waypoint in zip(waypoint_slots, reordered, strict=True):
+            self.nodes[slot] = waypoint
         return True
 
     def to_dict(self) -> dict[str, Any]:

@@ -1,11 +1,13 @@
 # Changelog
 
-## v0.6.2 development
+## v0.6.3 — 2026-09-08
 
+- Add Ctrl/Shift multi-selection in the Race structure list so ordered waypoint groups can be duplicated, deleted, or moved together for faster multi-lap course authoring ([#1](https://github.com/LouisH99/EDTT-Definer/issues/1)).
 - Warn when exactly one waypoint uses a different vehicle type from every other waypoint, while treating Ship and SLF PlayerState variants as their respective vehicle groups.
 - Add a default-enabled **Lock center at 0 m** course-camera option, keeping the orbit pivot on ground level while still allowing full 360-degree rotation.
 - Double-click Start, a waypoint, or End in the 3D view to select it and center the camera on it; disabling the height lock uses the checkpoint's actual altitude as the orbit pivot.
 - Fix GitHub rate-limit header handling for the PySide6 6.11 network API used by automatic update checks.
+- Publish the accumulated v0.6 course-view and race-line work as application version `0.6.3`.
 
 ## v0.6.1 development
 

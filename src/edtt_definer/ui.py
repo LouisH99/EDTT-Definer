@@ -1521,6 +1521,9 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(QLabel("Race structure"))
         self.navigation = QListWidget()
+        self.navigation.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.navigation.currentItemChanged.connect(self._navigation_changed)
         set_help(self.navigation, "navigation")
         left_layout.addWidget(self.navigation, 1)
@@ -1728,8 +1731,15 @@ class MainWindow(QMainWindow):
         self.refresh_validation_and_preview()
         self._update_title()
 
-    def refresh_navigation(self, select_id: str | None = None) -> None:
+    def refresh_navigation(
+        self,
+        select_id: str | None = None,
+        selected_ids: list[str] | set[str] | None = None,
+    ) -> None:
         select_id = select_id or self.current_section_id
+        selected_set = set(selected_ids or ())
+        if not selected_set and select_id:
+            selected_set.add(select_id)
         blocker = QSignalBlocker(self.navigation)
         self.navigation.clear()
         waypoint_number = 0
@@ -1755,9 +1765,18 @@ class MainWindow(QMainWindow):
             self.navigation.addItem(item)
             if section.node_id == select_id:
                 selected_row = self.navigation.count() - 1
-        del blocker
         if self.navigation.count():
             self.navigation.setCurrentRow(selected_row)
+            for row in range(self.navigation.count()):
+                item = self.navigation.item(row)
+                item.setSelected(
+                    item.data(Qt.ItemDataRole.UserRole) in selected_set
+                )
+            selected_item = self.navigation.item(selected_row)
+            if not selected_item.isSelected():
+                selected_item.setSelected(True)
+        del blocker
+        if self.navigation.count():
             self._show_section(self.navigation.item(selected_row).data(Qt.ItemDataRole.UserRole))
 
     def _navigation_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
@@ -2411,47 +2430,119 @@ class MainWindow(QMainWindow):
         section = self.project.document.section_by_id(self.current_section_id or "")
         return section if section and section.section_type is SectionType.WAYPOINT else None
 
+    def _selected_waypoints(self) -> list[SectionNode]:
+        selected_ids = {
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in self.navigation.selectedItems()
+        }
+        selected = [
+            waypoint.section
+            for waypoint in self.project.document.waypoints
+            if waypoint.section.node_id in selected_ids
+        ]
+        if selected:
+            return selected
+        current = self._current_waypoint()
+        return [current] if current is not None else []
+
     def duplicate_waypoint(self) -> None:
-        section = self._current_waypoint()
-        if section:
-            duplicate = self.project.document.duplicate_waypoint(section.node_id)
-            if duplicate:
-                source_metadata = deepcopy(self.project.metadata_for(section.node_id))
-                if source_metadata.display_name.strip():
-                    source_metadata.display_name = f"{source_metadata.display_name.strip()} (copy)"
-                self.project.stage_metadata[duplicate.node_id] = source_metadata
-                if section.node_id in self.project.capture_metadata:
-                    self.project.capture_metadata[duplicate.node_id] = deepcopy(
-                        self.project.capture_metadata[section.node_id]
-                    )
-                self.dirty = True
-                self.refresh_navigation(duplicate.node_id)
-                self.refresh_validation_and_preview()
-                self._update_title()
+        sources = self._selected_waypoints()
+        if not sources:
+            return
+        self._sync_current_stage_metadata()
+        duplicates = self.project.document.duplicate_waypoints(
+            source.node_id for source in sources
+        )
+        if not duplicates:
+            return
+        for source, duplicate in zip(sources, duplicates, strict=True):
+            source_metadata = deepcopy(self.project.metadata_for(source.node_id))
+            if source_metadata.display_name.strip():
+                source_metadata.display_name = f"{source_metadata.display_name.strip()} (copy)"
+            self.project.stage_metadata[duplicate.node_id] = source_metadata
+            if source.node_id in self.project.capture_metadata:
+                self.project.capture_metadata[duplicate.node_id] = deepcopy(
+                    self.project.capture_metadata[source.node_id]
+                )
+        current_index = next(
+            (
+                index for index, source in enumerate(sources)
+                if source.node_id == self.current_section_id
+            ),
+            0,
+        )
+        selected_ids = [duplicate.node_id for duplicate in duplicates]
+        self.dirty = True
+        self.refresh_navigation(
+            duplicates[current_index].node_id,
+            selected_ids=selected_ids,
+        )
+        self.refresh_validation_and_preview()
+        self._update_title()
+        self.statusBar().showMessage(
+            f"Duplicated {len(duplicates)} waypoint(s) as one group.", 5000
+        )
 
     def delete_waypoint(self) -> None:
-        section = self._current_waypoint()
-        if not section:
+        sections = self._selected_waypoints()
+        if not sections:
             return
-        if len(self.project.document.waypoints) <= 1:
-            QMessageBox.information(self, "Waypoint required", "A time trial must contain at least one waypoint.")
+        waypoints = [waypoint.section for waypoint in self.project.document.waypoints]
+        if len(waypoints) - len(sections) < 1:
+            QMessageBox.information(
+                self,
+                "Waypoint required",
+                "A time trial must contain at least one waypoint.",
+            )
             return
-        if self.project.document.remove_waypoint(section.node_id):
-            self.project.stage_metadata.pop(section.node_id, None)
-            self.project.capture_metadata.pop(section.node_id, None)
-            self.dirty = True
-            self.current_section_id = None
-            self.refresh_navigation()
-            self.refresh_validation_and_preview()
-            self._update_title()
+        if len(sections) > 1:
+            answer = QMessageBox.question(
+                self,
+                "Delete selected waypoints?",
+                f"Delete the {len(sections)} selected waypoints and their editor-only metadata?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        first_index = min(waypoints.index(section) for section in sections)
+        removed = 0
+        for section in sections:
+            if self.project.document.remove_waypoint(section.node_id):
+                self.project.stage_metadata.pop(section.node_id, None)
+                self.project.capture_metadata.pop(section.node_id, None)
+                removed += 1
+        if not removed:
+            return
+        remaining = [waypoint.section for waypoint in self.project.document.waypoints]
+        next_section = remaining[min(first_index, len(remaining) - 1)]
+        self.dirty = True
+        self.current_section_id = next_section.node_id
+        self.refresh_navigation(next_section.node_id)
+        self.refresh_validation_and_preview()
+        self._update_title()
+        self.statusBar().showMessage(f"Deleted {removed} waypoint(s).", 5000)
 
     def move_waypoint(self, direction: int) -> None:
-        section = self._current_waypoint()
-        if section and self.project.document.move_waypoint(section.node_id, direction):
+        sections = self._selected_waypoints()
+        if not sections:
+            return
+        selected_ids = [section.node_id for section in sections]
+        active_id = (
+            self.current_section_id
+            if self.current_section_id in selected_ids
+            else selected_ids[0]
+        )
+        if self.project.document.move_waypoints(selected_ids, direction):
             self.dirty = True
-            self.refresh_navigation(section.node_id)
+            self.refresh_navigation(active_id, selected_ids=selected_ids)
             self.refresh_validation_and_preview()
             self._update_title()
+            direction_label = "up" if direction < 0 else "down"
+            self.statusBar().showMessage(
+                f"Moved {len(sections)} waypoint(s) {direction_label}.", 5000
+            )
 
     def _scheduled_live_update(self) -> None:
         # Hidden MainWindow instances are used by interaction tests and by some

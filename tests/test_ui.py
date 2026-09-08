@@ -5,7 +5,14 @@ from decimal import Decimal
 import pytest
 from PySide6.QtCore import QEvent, QObject, QSettings, Qt, Signal
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox, QSizePolicy
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QFileDialog,
+    QLabel,
+    QMessageBox,
+    QSizePolicy,
+)
 
 from edtt_definer.geometry import calculate_gate, great_circle_distance_m
 from edtt_definer.live import LiveResult, LiveState, LocationSnapshot
@@ -48,7 +55,7 @@ class FakeUpdateClient(QObject):
 
 
 def test_patch_release_version_is_visible() -> None:
-    assert APP_DISPLAY_NAME == "EDTT Definer v0.6.2-dev"
+    assert APP_DISPLAY_NAME == "EDTT Definer v0.6.3"
 
 
 def test_new_course_uses_authoring_defaults(qtbot) -> None:
@@ -194,6 +201,86 @@ def test_waypoint_names_follow_duplicate_move_and_delete(qtbot) -> None:
     window.delete_waypoint()
     assert duplicate.node_id not in window.project.stage_metadata
     assert window.project.stage_metadata[original.node_id].display_name == "Canyon Gate"
+    window.dirty = False
+
+
+def test_multi_select_waypoints_duplicate_move_and_delete_as_group(qtbot, monkeypatch) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    assert window.navigation.selectionMode() is QAbstractItemView.SelectionMode.ExtendedSelection
+    first = window.project.document.waypoints[0].section
+    second = window.add_waypoint()
+    third = window.add_waypoint()
+    first.set_value("NextInstruction", "First")
+    second.set_value("NextInstruction", "Second")
+    third.set_value("NextInstruction", "Third")
+    window.project.stage_metadata[first.node_id] = StageMetadata(display_name="Alpha")
+    window.project.stage_metadata[second.node_id] = StageMetadata(display_name="Bravo")
+    window.project.capture_metadata[first.node_id] = {"heading": "10"}
+    window.project.capture_metadata[second.node_id] = {"heading": "20"}
+    window.refresh_navigation(first.node_id)
+
+    waypoint_items = [
+        window.navigation.item(row)
+        for row in range(window.navigation.count())
+        if window.project.document.section_by_id(
+            window.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+        ).section_type is SectionType.WAYPOINT
+    ]
+    window.navigation.setCurrentItem(waypoint_items[0])
+    waypoint_items[1].setSelected(True)
+
+    window.duplicate_waypoint()
+
+    assert [
+        waypoint.get("NextInstruction") for waypoint in window.project.document.waypoints
+    ] == ["First", "Second", "First", "Second", "Third"]
+    selected_duplicates = window._selected_waypoints()
+    assert len(selected_duplicates) == 2
+    assert [
+        window.project.stage_metadata[section.node_id].display_name
+        for section in selected_duplicates
+    ] == ["Alpha (copy)", "Bravo (copy)"]
+    assert [
+        window.project.capture_metadata[section.node_id]["heading"]
+        for section in selected_duplicates
+    ] == ["10", "20"]
+
+    window.move_waypoint(1)
+    assert [
+        waypoint.get("NextInstruction") for waypoint in window.project.document.waypoints
+    ] == ["First", "Second", "Third", "First", "Second"]
+    assert [
+        section.node_id for section in window._selected_waypoints()
+    ] == [section.node_id for section in selected_duplicates]
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Cancel,
+    )
+    window.delete_waypoint()
+    assert len(window.project.document.waypoints) == 5
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+    window.delete_waypoint()
+    assert [
+        waypoint.get("NextInstruction") for waypoint in window.project.document.waypoints
+    ] == ["First", "Second", "Third"]
+    assert all(
+        section.node_id not in window.project.stage_metadata
+        for section in selected_duplicates
+    )
+    assert all(
+        section.node_id not in window.project.capture_metadata
+        for section in selected_duplicates
+    )
     window.dirty = False
 
 
