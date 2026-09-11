@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -120,6 +122,8 @@ ROUTE_PLAYER_STATES = ["Ship", "ShipPass", "Fighter", "SRV", "OnFoot"]
 REPOSITORY_URL = "https://github.com/LouisH99/EDTT-Definer"
 ISSUES_URL = f"{REPOSITORY_URL}/issues"
 RELEASES_URL = f"{REPOSITORY_URL}/releases"
+NAV_DIVIDER_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+NAV_TARGET_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 
 
 def _editable_combo(values: list[str]) -> QComboBox:
@@ -1304,6 +1308,7 @@ class StageForm(QWidget):
             altitude_mode=self.current_altitude_mode(),
             maximum_altitude=self.maximum_altitude.text().strip(),
             altitude_locked=self.altitude_locked.isChecked(),
+            separator_before=self.metadata.separator_before,
         )
 
     def _update_altitude_fields(self, mode: AltitudeMode) -> None:
@@ -1525,6 +1530,12 @@ class MainWindow(QMainWindow):
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
         self.navigation.currentItemChanged.connect(self._navigation_changed)
+        self.navigation.itemSelectionChanged.connect(
+            self._navigation_selection_changed
+        )
+        self.navigation.itemDoubleClicked.connect(
+            self._navigation_item_double_clicked
+        )
         set_help(self.navigation, "navigation")
         left_layout.addWidget(self.navigation, 1)
         waypoint_row = QGridLayout()
@@ -1535,6 +1546,8 @@ class MainWindow(QMainWindow):
             ("Delete", self.delete_waypoint, "delete_waypoint"),
             ("Move up", lambda: self.move_waypoint(-1), "move_up"),
             ("Move down", lambda: self.move_waypoint(1), "move_down"),
+            ("Section…", self.edit_section_separator, "section_separator"),
+            ("Reverse", self.reverse_selected_waypoints, "reverse_waypoints"),
         ]
         self.waypoint_buttons: dict[str, QPushButton] = {}
         for index, (text, callback, help_key) in enumerate(buttons):
@@ -1735,6 +1748,7 @@ class MainWindow(QMainWindow):
         self,
         select_id: str | None = None,
         selected_ids: list[str] | set[str] | None = None,
+        select_divider_for: str | None = None,
     ) -> None:
         select_id = select_id or self.current_section_id
         selected_set = set(selected_ids or ())
@@ -1744,6 +1758,7 @@ class MainWindow(QMainWindow):
         self.navigation.clear()
         waypoint_number = 0
         selected_row = 0
+        selected_divider_row: int | None = None
         for section in self.project.document.sections():
             kind = section.section_type
             if kind is SectionType.EVENTINFO:
@@ -1754,7 +1769,31 @@ class MainWindow(QMainWindow):
                 label = "End"
             elif kind is SectionType.WAYPOINT:
                 waypoint_number += 1
-                name = self.project.stage_metadata.get(section.node_id, StageMetadata()).display_name.strip()
+                metadata = self.project.stage_metadata.get(
+                    section.node_id, StageMetadata()
+                )
+                separator = metadata.separator_before.strip()
+                if separator:
+                    divider = QListWidgetItem(f"──── {separator} ────")
+                    divider.setData(NAV_DIVIDER_ROLE, True)
+                    divider.setData(NAV_TARGET_ROLE, section.node_id)
+                    divider.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    divider_font = divider.font()
+                    divider_font.setBold(True)
+                    divider.setFont(divider_font)
+                    divider.setData(
+                        Qt.ItemDataRole.AccessibleTextRole,
+                        f"Section divider: {separator}",
+                    )
+                    divider.setToolTip(
+                        "Editor-only lap/section divider. Select it and use Section… or "
+                        "double-click to rename it; use Delete to remove only the divider. "
+                        "It is not exported to EDCoPilot."
+                    )
+                    self.navigation.addItem(divider)
+                    if section.node_id == select_divider_for:
+                        selected_divider_row = self.navigation.count() - 1
+                name = metadata.display_name.strip()
                 label = f"Waypoint {waypoint_number}"
                 if name:
                     label += f" — {name}"
@@ -1765,6 +1804,8 @@ class MainWindow(QMainWindow):
             self.navigation.addItem(item)
             if section.node_id == select_id:
                 selected_row = self.navigation.count() - 1
+        if selected_divider_row is not None:
+            selected_row = selected_divider_row
         if self.navigation.count():
             self.navigation.setCurrentRow(selected_row)
             for row in range(self.navigation.count()):
@@ -1777,11 +1818,42 @@ class MainWindow(QMainWindow):
                 selected_item.setSelected(True)
         del blocker
         if self.navigation.count():
-            self._show_section(self.navigation.item(selected_row).data(Qt.ItemDataRole.UserRole))
+            self._show_section(
+                self._navigation_node_id(self.navigation.item(selected_row))
+            )
+
+    @staticmethod
+    def _is_navigation_divider(item: QListWidgetItem | None) -> bool:
+        return bool(item and item.data(NAV_DIVIDER_ROLE))
+
+    @staticmethod
+    def _navigation_node_id(item: QListWidgetItem | None) -> str | None:
+        if item is None:
+            return None
+        if item.data(NAV_DIVIDER_ROLE):
+            return item.data(NAV_TARGET_ROLE)
+        return item.data(Qt.ItemDataRole.UserRole)
+
+    def _navigation_label_for(self, node_id: str) -> str:
+        for row in range(self.navigation.count()):
+            item = self.navigation.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == node_id:
+                return item.text()
+        section = self.project.document.section_by_id(node_id)
+        return section.name.title() if section is not None else "Stage"
 
     def _navigation_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current:
-            self._show_section(current.data(Qt.ItemDataRole.UserRole))
+            node_id = self._navigation_node_id(current)
+            if node_id:
+                self._show_section(node_id)
+
+    def _navigation_item_double_clicked(self, item: QListWidgetItem) -> None:
+        if self._is_navigation_divider(item):
+            self.edit_section_separator()
+
+    def _navigation_selection_changed(self) -> None:
+        self._update_waypoint_action_buttons()
 
     def _show_section(self, node_id: str) -> None:
         section = self.project.document.section_by_id(node_id)
@@ -1792,7 +1864,7 @@ class MainWindow(QMainWindow):
             self.event_form.set_section(section)
             self.form_stack.setCurrentIndex(0)
         else:
-            label = self.navigation.currentItem().text() if self.navigation.currentItem() else section.name.title()
+            label = self._navigation_label_for(node_id)
             first_waypoint = next(iter(self.project.document.waypoints), None)
             allow_flying_start = (
                 section.section_type is SectionType.START
@@ -2409,8 +2481,14 @@ class MainWindow(QMainWindow):
         return mapping.get(race_type, "ShipPass")
 
     def add_waypoint(self) -> SectionNode:
-        previous = self.project.document.waypoints[-1].section if self.project.document.waypoints else None
-        section = self.project.document.add_waypoint(self._default_waypoint_state())
+        active_waypoint = self._current_waypoint()
+        previous = active_waypoint
+        if previous is None and self.project.document.waypoints:
+            previous = self.project.document.waypoints[-1].section
+        section = self.project.document.add_waypoint(
+            self._default_waypoint_state(),
+            after_node_id=active_waypoint.node_id if active_waypoint else None,
+        )
         metadata = StageMetadata(
             altitude_mode=AltitudeMode.MAXIMUM,
         )
@@ -2431,6 +2509,8 @@ class MainWindow(QMainWindow):
         return section if section and section.section_type is SectionType.WAYPOINT else None
 
     def _selected_waypoints(self) -> list[SectionNode]:
+        if self._is_navigation_divider(self.navigation.currentItem()):
+            return []
         selected_ids = {
             item.data(Qt.ItemDataRole.UserRole)
             for item in self.navigation.selectedItems()
@@ -2445,6 +2525,141 @@ class MainWindow(QMainWindow):
         current = self._current_waypoint()
         return [current] if current is not None else []
 
+    def _waypoint_route_label(self, section: SectionNode) -> str:
+        waypoints = [waypoint.section for waypoint in self.project.document.waypoints]
+        try:
+            number = waypoints.index(section) + 1
+        except ValueError:
+            return "Unknown waypoint"
+        name = self.project.metadata_for(section.node_id).display_name.strip()
+        return f"Waypoint {number}" + (f" — {name}" if name else "")
+
+    @staticmethod
+    def _copied_separator_label(label: str, used_labels: set[str]) -> str:
+        label = label.strip()
+        if not label:
+            return ""
+        numbered = re.fullmatch(
+            r"(.*?\b(?:lap|section)\s*)(\d+)(.*)", label, re.IGNORECASE,
+        )
+        if numbered:
+            prefix, raw_number, suffix = numbered.groups()
+            number = int(raw_number) + 1
+            candidate = f"{prefix}{number}{suffix}"
+            while candidate.casefold() in used_labels:
+                number += 1
+                candidate = f"{prefix}{number}{suffix}"
+        else:
+            candidate = f"{label} (copy)"
+            copy_number = 2
+            while candidate.casefold() in used_labels:
+                candidate = f"{label} (copy {copy_number})"
+                copy_number += 1
+        used_labels.add(candidate.casefold())
+        return candidate
+
+    def edit_section_separator(self) -> None:
+        section = self._current_waypoint()
+        if section is None:
+            return
+        metadata = self.project.metadata_for(section.node_id)
+        previous = metadata.separator_before.strip()
+        label, accepted = QInputDialog.getText(
+            self,
+            "Lap / section divider",
+            "Divider shown before this waypoint (leave blank to remove):",
+            text=previous,
+        )
+        if not accepted:
+            return
+        label = label.strip()
+        if label == previous:
+            return
+        selected_ids = [item.node_id for item in self._selected_waypoints()]
+        metadata.separator_before = label
+        self.dirty = True
+        self.refresh_navigation(
+            section.node_id,
+            selected_ids=selected_ids if not label else None,
+            select_divider_for=section.node_id if label else None,
+        )
+        self.refresh_validation_and_preview()
+        self._update_title()
+        action = "Added" if label and not previous else "Updated" if label else "Removed"
+        self.statusBar().showMessage(f"{action} lap/section divider.", 5000)
+
+    def _confirm_reverse_waypoints(self, sections: list[SectionNode]) -> bool:
+        labels = [self._waypoint_route_label(section) for section in sections]
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Reverse selected waypoints?")
+        box.setText(f"Reverse {len(sections)} selected waypoints?")
+        box.setInformativeText(
+            "Before:\n"
+            + " → ".join(labels)
+            + "\n\nAfter:\n"
+            + " → ".join(reversed(labels))
+            + "\n\nOnly waypoint order changes. Gate endpoints, heading/direction "
+            "conditions, and spoken instructions are not rewritten; review them "
+            "for the reverse direction."
+        )
+        reverse_button = box.addButton("Reverse", QMessageBox.ButtonRole.AcceptRole)
+        cancel_button = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel_button)
+        box.setEscapeButton(cancel_button)
+        box.exec()
+        return box.clickedButton() is reverse_button
+
+    def reverse_selected_waypoints(self) -> None:
+        sections = self._selected_waypoints()
+        if len(sections) < 2:
+            QMessageBox.information(
+                self,
+                "Select a waypoint range",
+                "Select at least two consecutive waypoints to reverse.",
+            )
+            return
+        all_waypoints = [
+            waypoint.section for waypoint in self.project.document.waypoints
+        ]
+        indexes = [all_waypoints.index(section) for section in sections]
+        if indexes != list(range(indexes[0], indexes[-1] + 1)):
+            QMessageBox.information(
+                self,
+                "Select one continuous range",
+                "Reverse requires consecutive waypoints. Use Shift to select one continuous lap or section.",
+            )
+            return
+        if not self._confirm_reverse_waypoints(sections):
+            return
+
+        self._sync_current_stage_metadata()
+        separator_slots = [
+            self.project.metadata_for(section.node_id).separator_before
+            for section in sections
+        ]
+        selected_ids = [section.node_id for section in sections]
+        active_id = (
+            self.current_section_id
+            if self.current_section_id in selected_ids
+            else selected_ids[0]
+        )
+        if not self.project.document.reverse_waypoints(selected_ids):
+            return
+        for section, separator in zip(
+            reversed(sections), separator_slots, strict=True,
+        ):
+            self.project.metadata_for(section.node_id).separator_before = separator
+
+        self.dirty = True
+        self.refresh_navigation(active_id, selected_ids=selected_ids)
+        self.refresh_validation_and_preview()
+        self._update_title()
+        self.statusBar().showMessage(
+            f"Reversed {len(sections)} waypoint(s). Review direction-specific content.",
+            8000,
+        )
+
     def duplicate_waypoint(self) -> None:
         sources = self._selected_waypoints()
         if not sources:
@@ -2455,10 +2670,19 @@ class MainWindow(QMainWindow):
         )
         if not duplicates:
             return
+        used_separator_labels = {
+            metadata.separator_before.strip().casefold()
+            for metadata in self.project.stage_metadata.values()
+            if metadata.separator_before.strip()
+        }
         for source, duplicate in zip(sources, duplicates, strict=True):
             source_metadata = deepcopy(self.project.metadata_for(source.node_id))
             if source_metadata.display_name.strip():
                 source_metadata.display_name = f"{source_metadata.display_name.strip()} (copy)"
+            source_metadata.separator_before = self._copied_separator_label(
+                source_metadata.separator_before,
+                used_separator_labels,
+            )
             self.project.stage_metadata[duplicate.node_id] = source_metadata
             if source.node_id in self.project.capture_metadata:
                 self.project.capture_metadata[duplicate.node_id] = deepcopy(
@@ -2484,6 +2708,21 @@ class MainWindow(QMainWindow):
         )
 
     def delete_waypoint(self) -> None:
+        if self._is_navigation_divider(self.navigation.currentItem()):
+            section = self._current_waypoint()
+            if section is None:
+                return
+            metadata = self.project.metadata_for(section.node_id)
+            if not metadata.separator_before:
+                return
+            metadata.separator_before = ""
+            self.dirty = True
+            self.refresh_navigation(section.node_id)
+            self.refresh_validation_and_preview()
+            self._update_title()
+            self.statusBar().showMessage("Deleted lap/section divider.", 5000)
+            return
+
         sections = self._selected_waypoints()
         if not sections:
             return
@@ -2860,7 +3099,11 @@ class MainWindow(QMainWindow):
     def _update_capture_buttons(self) -> None:
         ready = self.live_result.state is LiveState.LIVE and self.live_result.snapshot is not None
         selected = self.project.document.section_by_id(self.current_section_id or "")
-        stage_selected = selected is not None and selected.section_type is not SectionType.EVENTINFO
+        stage_selected = (
+            selected is not None
+            and selected.section_type is not SectionType.EVENTINFO
+            and not self._is_navigation_divider(self.navigation.currentItem())
+        )
         self.capture_button.setEnabled(ready and stage_selected)
         self.capture_add_button.setEnabled(ready)
         snapshot = self.live_result.snapshot
@@ -2874,6 +3117,31 @@ class MainWindow(QMainWindow):
             and bool(self.stage_form.gate_width.text().strip())
         )
         self.stage_form.calculate_gate_button.setEnabled(gate_ready)
+        self._update_waypoint_action_buttons()
+
+    def _update_waypoint_action_buttons(self) -> None:
+        if not hasattr(self, "waypoint_buttons"):
+            return
+        divider_selected = self._is_navigation_divider(
+            self.navigation.currentItem()
+        )
+        selected = self._selected_waypoints()
+        has_waypoints = bool(selected)
+        for label in ("Duplicate", "Move up", "Move down"):
+            self.waypoint_buttons[label].setEnabled(has_waypoints)
+        delete_button = self.waypoint_buttons["Delete"]
+        delete_button.setEnabled(divider_selected or has_waypoints)
+        delete_button.setText("Delete section" if divider_selected else "Delete")
+        set_help_text(
+            delete_button,
+            HELP_TEXT[
+                "delete_section_separator" if divider_selected else "delete_waypoint"
+            ],
+        )
+        self.waypoint_buttons["Section…"].setEnabled(
+            self._current_waypoint() is not None
+        )
+        self.waypoint_buttons["Reverse"].setEnabled(len(selected) >= 2)
 
     def _previous_context(self, section: SectionNode) -> tuple[str, str, str]:
         stages = [stage.section for stage in ([self.project.document.start] if self.project.document.start else []) + self.project.document.waypoints + ([self.project.document.end] if self.project.document.end else [])]

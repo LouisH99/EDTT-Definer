@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.4 — 2026-09-11
+
+- Add editor-only named lap/section dividers to make long and multi-lap routes easier to scan without changing EDCoPilot TXT.
+- Add guarded reversal of a contiguous multi-waypoint selection, preserving complete waypoint blocks and keeping divider boundaries at their route positions.
+- Upgrade editable projects to schema version 3 with automatic loading of schema versions 1 and 2.
+- Make divider rows directly selectable: double-click or **Section…** renames them, while **Delete section** removes only the divider.
+- Insert new waypoints immediately after the active waypoint and inherit that waypoint's maximum-height defaults; non-waypoint selections still append to the route.
+
 ## v0.6.3 — 2026-09-08
 
 - Add Ctrl/Shift multi-selection in the Race structure list so ordered waypoint groups can be duplicated, deleted, or moved together for faster multi-lap course authoring ([#1](https://github.com/LouisH99/EDTT-Definer/issues/1)).

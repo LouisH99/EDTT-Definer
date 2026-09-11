@@ -354,9 +354,19 @@ class EventDocument:
         sections = self.sections(SectionType.END)
         return Stage(sections[0]) if sections else None
 
-    def add_waypoint(self, player_state: str = "ShipPass") -> SectionNode:
+    def add_waypoint(
+        self,
+        player_state: str = "ShipPass",
+        after_node_id: str | None = None,
+    ) -> SectionNode:
         section = SectionNode("waypoint", "[waypoint]", "[\\waypoint]")
         section.set_value("PlayerState", player_state)
+        anchor = self.section_by_id(after_node_id or "")
+        if anchor is not None and anchor.section_type is SectionType.WAYPOINT:
+            anchor_index = self.nodes.index(anchor)
+            self.nodes[anchor_index + 1:anchor_index + 1] = [RawNode(""), section]
+            return section
+
         end_section = next(iter(self.sections(SectionType.END)), None)
         if end_section is None:
             if self.nodes and not isinstance(self.nodes[-1], RawNode):
@@ -438,6 +448,28 @@ class EventDocument:
 
         waypoint_slots = [self.nodes.index(waypoint) for waypoint in waypoints]
         for slot, waypoint in zip(waypoint_slots, reordered, strict=True):
+            self.nodes[slot] = waypoint
+        return True
+
+    def reverse_waypoints(self, node_ids: Iterable[str]) -> bool:
+        """Reverse one contiguous waypoint range without changing its blocks."""
+        waypoints = self.sections(SectionType.WAYPOINT)
+        selected_ids = set(node_ids)
+        selected_indexes = [
+            index for index, waypoint in enumerate(waypoints)
+            if waypoint.node_id in selected_ids
+        ]
+        if len(selected_indexes) < 2:
+            return False
+        first, last = selected_indexes[0], selected_indexes[-1]
+        if selected_indexes != list(range(first, last + 1)):
+            return False
+
+        waypoint_slots = [self.nodes.index(waypoint) for waypoint in waypoints]
+        reversed_range = list(reversed(waypoints[first:last + 1]))
+        for slot, waypoint in zip(
+            waypoint_slots[first:last + 1], reversed_range, strict=True,
+        ):
             self.nodes[slot] = waypoint
         return True
 

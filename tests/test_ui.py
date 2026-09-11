@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFileDialog,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QSizePolicy,
@@ -55,7 +56,7 @@ class FakeUpdateClient(QObject):
 
 
 def test_patch_release_version_is_visible() -> None:
-    assert APP_DISPLAY_NAME == "EDTT Definer v0.6.3"
+    assert APP_DISPLAY_NAME == "EDTT Definer v0.6.4"
 
 
 def test_new_course_uses_authoring_defaults(qtbot) -> None:
@@ -216,7 +217,9 @@ def test_multi_select_waypoints_duplicate_move_and_delete_as_group(qtbot, monkey
     first.set_value("NextInstruction", "First")
     second.set_value("NextInstruction", "Second")
     third.set_value("NextInstruction", "Third")
-    window.project.stage_metadata[first.node_id] = StageMetadata(display_name="Alpha")
+    window.project.stage_metadata[first.node_id] = StageMetadata(
+        display_name="Alpha", separator_before="Lap 1"
+    )
     window.project.stage_metadata[second.node_id] = StageMetadata(display_name="Bravo")
     window.project.capture_metadata[first.node_id] = {"heading": "10"}
     window.project.capture_metadata[second.node_id] = {"heading": "20"}
@@ -225,9 +228,14 @@ def test_multi_select_waypoints_duplicate_move_and_delete_as_group(qtbot, monkey
     waypoint_items = [
         window.navigation.item(row)
         for row in range(window.navigation.count())
-        if window.project.document.section_by_id(
-            window.navigation.item(row).data(Qt.ItemDataRole.UserRole)
-        ).section_type is SectionType.WAYPOINT
+        if (
+            window.project.document.section_by_id(
+                window.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+            ) is not None
+            and window.project.document.section_by_id(
+                window.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+            ).section_type is SectionType.WAYPOINT
+        )
     ]
     window.navigation.setCurrentItem(waypoint_items[0])
     waypoint_items[1].setSelected(True)
@@ -243,6 +251,10 @@ def test_multi_select_waypoints_duplicate_move_and_delete_as_group(qtbot, monkey
         window.project.stage_metadata[section.node_id].display_name
         for section in selected_duplicates
     ] == ["Alpha (copy)", "Bravo (copy)"]
+    assert [
+        window.project.stage_metadata[section.node_id].separator_before
+        for section in selected_duplicates
+    ] == ["Lap 2", ""]
     assert [
         window.project.capture_metadata[section.node_id]["heading"]
         for section in selected_duplicates
@@ -281,6 +293,197 @@ def test_multi_select_waypoints_duplicate_move_and_delete_as_group(qtbot, monkey
         section.node_id not in window.project.capture_metadata
         for section in selected_duplicates
     )
+    window.dirty = False
+
+
+def test_new_waypoint_is_inserted_after_active_waypoint_and_inherits_it(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    first = window.project.document.waypoints[0].section
+    second = window.add_waypoint()
+    window.stage_form.maximum_altitude.setText("400")
+    third = window.add_waypoint()
+    window.stage_form.maximum_altitude.setText("900")
+
+    window.refresh_navigation(second.node_id)
+    inserted = window.add_waypoint()
+
+    assert [
+        waypoint.section.node_id
+        for waypoint in window.project.document.waypoints
+    ] == [first.node_id, second.node_id, inserted.node_id, third.node_id]
+    assert window.project.metadata_for(inserted.node_id).maximum_altitude == "400"
+    assert inserted.value("Altitude") == "200"
+    assert inserted.value("AltitudeProximity") == "200"
+    assert window.current_section_id == inserted.node_id
+    window.dirty = False
+
+
+def test_editor_only_section_divider_can_be_added_renamed_and_removed(
+    qtbot, monkeypatch,
+) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    waypoint = window.project.document.waypoints[0].section
+    original_export = window.preview.toPlainText()
+    window.refresh_navigation(waypoint.node_id)
+    answers = iter((("Lap 1", True), ("Canyon section", True)))
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *_args, **_kwargs: next(answers),
+    )
+
+    window.edit_section_separator()
+
+    assert window.project.metadata_for(waypoint.node_id).separator_before == "Lap 1"
+    divider = next(
+        window.navigation.item(row)
+        for row in range(window.navigation.count())
+        if window.navigation.item(row).data(Qt.ItemDataRole.UserRole) is None
+    )
+    assert divider.text() == "──── Lap 1 ────"
+    assert divider.flags() & Qt.ItemFlag.ItemIsSelectable
+    assert divider.font().bold()
+    assert window.navigation.currentItem() is divider
+    assert window.waypoint_buttons["Delete"].text() == "Delete section"
+    assert window.preview.toPlainText() == original_export
+
+    window._navigation_item_double_clicked(divider)
+    assert window.project.metadata_for(waypoint.node_id).separator_before == "Canyon section"
+    window.stage_form.waypoint_name.setText("Gate A")
+    assert window.project.metadata_for(waypoint.node_id).separator_before == "Canyon section"
+
+    waypoint_count = len(window.project.document.waypoints)
+    window.delete_waypoint()
+    assert window.project.metadata_for(waypoint.node_id).separator_before == ""
+    assert len(window.project.document.waypoints) == waypoint_count
+    assert all(
+        window.navigation.item(row).data(Qt.ItemDataRole.UserRole) is not None
+        for row in range(window.navigation.count())
+    )
+    assert window.preview.toPlainText() == original_export
+    window.dirty = False
+
+
+def test_reverse_selected_waypoints_preserves_data_and_divider_positions(
+    qtbot, monkeypatch,
+) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    first = window.project.document.waypoints[0].section
+    second = window.add_waypoint()
+    third = window.add_waypoint()
+    for section, instruction, name, separator in zip(
+        (first, second, third),
+        ("First", "Second", "Third"),
+        ("Alpha", "Bravo", "Charlie"),
+        ("Lap 1", "", "Technical section"),
+        strict=True,
+    ):
+        section.set_value("NextInstruction", instruction)
+        window.project.stage_metadata[section.node_id] = StageMetadata(
+            display_name=name,
+            maximum_altitude=f"{len(name)}00",
+            separator_before=separator,
+        )
+        window.project.capture_metadata[section.node_id] = {"name": name}
+    window.refresh_navigation(first.node_id)
+    waypoint_items = [
+        window.navigation.item(row)
+        for row in range(window.navigation.count())
+        if (
+            window.project.document.section_by_id(
+                window.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+            ) is not None
+            and window.project.document.section_by_id(
+                window.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+            ).section_type is SectionType.WAYPOINT
+        )
+    ]
+    window.navigation.setCurrentItem(waypoint_items[0])
+    for item in waypoint_items[1:]:
+        item.setSelected(True)
+    confirmations = []
+    monkeypatch.setattr(
+        window,
+        "_confirm_reverse_waypoints",
+        lambda sections: confirmations.append([section.node_id for section in sections]) or True,
+    )
+
+    window.reverse_selected_waypoints()
+
+    reversed_sections = [
+        waypoint.section for waypoint in window.project.document.waypoints
+    ]
+    assert [section.value("NextInstruction") for section in reversed_sections] == [
+        "Third", "Second", "First"
+    ]
+    assert [
+        window.project.metadata_for(section.node_id).display_name
+        for section in reversed_sections
+    ] == ["Charlie", "Bravo", "Alpha"]
+    assert [
+        window.project.metadata_for(section.node_id).separator_before
+        for section in reversed_sections
+    ] == ["Lap 1", "", "Technical section"]
+    assert [
+        window.project.capture_metadata[section.node_id]["name"]
+        for section in reversed_sections
+    ] == ["Charlie", "Bravo", "Alpha"]
+    assert confirmations == [[first.node_id, second.node_id, third.node_id]]
+    assert len(window._selected_waypoints()) == 3
+    assert "Lap 1" not in window.preview.toPlainText()
+    assert "Technical section" not in window.preview.toPlainText()
+    window.dirty = False
+
+
+def test_reverse_rejects_non_contiguous_waypoint_selection(qtbot, monkeypatch) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    first = window.project.document.waypoints[0].section
+    second = window.add_waypoint()
+    third = window.add_waypoint()
+    window.refresh_navigation(first.node_id)
+    waypoint_items = [
+        window.navigation.item(row)
+        for row in range(window.navigation.count())
+        if (
+            window.project.document.section_by_id(
+                window.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+            ) is not None
+            and window.project.document.section_by_id(
+                window.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+            ).section_type is SectionType.WAYPOINT
+        )
+    ]
+    window.navigation.setCurrentItem(waypoint_items[0])
+    waypoint_items[2].setSelected(True)
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda *_args, **_kwargs: messages.append(_args[-1]),
+    )
+    monkeypatch.setattr(
+        window,
+        "_confirm_reverse_waypoints",
+        lambda _sections: pytest.fail("confirmation must not open for a scattered selection"),
+    )
+
+    window.reverse_selected_waypoints()
+
+    assert [
+        waypoint.section.node_id for waypoint in window.project.document.waypoints
+    ] == [first.node_id, second.node_id, third.node_id]
+    assert messages and "consecutive" in messages[0]
     window.dirty = False
 
 
@@ -1247,6 +1450,8 @@ def test_detailed_help_covers_player_states_and_major_controls(qtbot) -> None:
         window.stage_form.maximum_altitude,
         window.stage_form.max_speed,
         window.navigation,
+        window.waypoint_buttons["Section…"],
+        window.waypoint_buttons["Reverse"],
         window.capture_button,
         window.preview,
     ):

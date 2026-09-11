@@ -11,7 +11,7 @@ from .model import EventDocument, SectionNode, SectionType
 from .parser import atomic_write
 
 
-PROJECT_SCHEMA_VERSION = 2
+PROJECT_SCHEMA_VERSION = 3
 
 
 class AltitudeMode(str, Enum):
@@ -26,6 +26,7 @@ class StageMetadata:
     altitude_mode: AltitudeMode | None = None
     maximum_altitude: str = ""
     altitude_locked: bool = True
+    separator_before: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -33,6 +34,7 @@ class StageMetadata:
             "altitude_mode": self.altitude_mode.value if self.altitude_mode else None,
             "maximum_altitude": self.maximum_altitude,
             "altitude_locked": self.altitude_locked,
+            "separator_before": self.separator_before,
         }
 
     @classmethod
@@ -47,6 +49,7 @@ class StageMetadata:
             altitude_mode=mode,
             maximum_altitude=str(data.get("maximum_altitude", "")),
             altitude_locked=bool(data.get("altitude_locked", True)),
+            separator_before=str(data.get("separator_before", "")),
         )
 
 
@@ -138,7 +141,7 @@ class ProjectData:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProjectData:
         version = data.get("schema_version")
-        if version not in {1, PROJECT_SCHEMA_VERSION}:
+        if version not in {1, 2, PROJECT_SCHEMA_VERSION}:
             raise ValueError(f"Unsupported project schema version: {version!r}")
         raw_stage_metadata = data.get("stage_metadata", {}) if version >= 2 else {}
         return cls(

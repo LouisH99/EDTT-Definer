@@ -134,10 +134,18 @@ HELP_TEXT = {
     "navigation": (
         "Select Event Info, Start, a numbered Waypoint, or End to edit it in the centre pane. "
         "Hold Ctrl to select separate waypoints or Shift to select a range for grouped duplicate, "
-        "delete, and move actions. The active item remains the only one edited by the form."
+        "delete, move, and reverse actions. The active item remains the only one edited by the form. "
+        "Bold divider rows are editor-only lap or section labels; select one to edit or delete it, or "
+        "double-click it to rename it."
     ),
-    "add_waypoint": "Add a new waypoint after the existing waypoints, inheriting the previous maximum height when available.",
-    "capture_add": "Create a waypoint and fill its coordinates and available location context from live game data.",
+    "add_waypoint": (
+        "Add a new waypoint immediately after the active waypoint. If Start, End, or Event Info is active, "
+        "it is added at the end. The new waypoint inherits the preceding maximum height when available."
+    ),
+    "capture_add": (
+        "Create a waypoint immediately after the active waypoint, then fill its coordinates and available "
+        "location context from live game data."
+    ),
     "duplicate_waypoint": (
         "Duplicate all selected waypoints as one route-ordered group immediately after the last selected "
         "waypoint. Names, altitude settings, comments, unknown entries, and capture metadata are copied."
@@ -146,8 +154,20 @@ HELP_TEXT = {
         "Delete all selected waypoints and their editor-only metadata. Multiple deletions require "
         "confirmation, and at least one waypoint must remain."
     ),
+    "delete_section_separator": (
+        "Remove only the selected editor-only lap/section divider. The waypoint and all race data remain unchanged."
+    ),
     "move_up": "Move all selected waypoints one place earlier while preserving their relative order and complete data.",
     "move_down": "Move all selected waypoints one place later while preserving their relative order and complete data.",
+    "section_separator": (
+        "Add, rename, or remove an editor-only lap/section divider immediately before the active waypoint. "
+        "Select an existing divider and use this button or double-click the divider to rename it. Examples: Lap 2 "
+        "or Canyon section. Dividers are saved in editable projects and never exported to EDCoPilot."
+    ),
+    "reverse_waypoints": (
+        "Reverse one continuous range of two or more selected waypoints. Complete waypoint data stays together, "
+        "but direction-specific conditions and spoken instructions are not rewritten and should be reviewed."
+    ),
     "capture_selected": "Fill the selected Start, Waypoint, or End from valid live surface coordinates without exporting.",
     "journal_folder": (
         "Override the automatically detected Elite Dangerous Saved Games journal folder. EDTT Definer "

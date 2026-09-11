@@ -147,13 +147,13 @@ def test_project_round_trip_preserves_ast_and_metadata(tmp_path: Path) -> None:
         "race.export.txt",
         {
             waypoint_id: StageMetadata(
-                "Canyon Gate", AltitudeMode.MAXIMUM, "500", True
+                "Canyon Gate", AltitudeMode.MAXIMUM, "500", True, "Lap 1"
             )
         },
     )
     path = tmp_path / "race.edttc.json"
     save_project(project, path)
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 2
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 3
     loaded = load_project(path)
     assert serialize_document(loaded.document) == SAMPLE
     assert loaded.capture_metadata["abc"]["heading"] == "90"
@@ -162,6 +162,7 @@ def test_project_round_trip_preserves_ast_and_metadata(tmp_path: Path) -> None:
     assert loaded.stage_metadata[waypoint_id].altitude_mode is AltitudeMode.MAXIMUM
     assert loaded.stage_metadata[waypoint_id].maximum_altitude == "500"
     assert loaded.stage_metadata[waypoint_id].altitude_locked
+    assert loaded.stage_metadata[waypoint_id].separator_before == "Lap 1"
 
 
 def test_version_one_project_migrates_with_altitude_locked(tmp_path: Path) -> None:
@@ -177,6 +178,23 @@ def test_version_one_project_migrates_with_altitude_locked(tmp_path: Path) -> No
 
     assert loaded.stage_metadata == {}
     assert loaded.metadata_for(waypoint.node_id).altitude_locked
+    assert loaded.metadata_for(waypoint.node_id).separator_before == ""
+
+
+def test_version_two_project_migrates_without_separator_metadata(tmp_path: Path) -> None:
+    project = ProjectData(parse_text(SAMPLE))
+    waypoint = project.document.waypoints[0].section
+    project.stage_metadata[waypoint.node_id] = StageMetadata(display_name="Legacy")
+    payload = project.to_dict()
+    payload["schema_version"] = 2
+    payload["stage_metadata"][waypoint.node_id].pop("separator_before")
+    path = tmp_path / "version-two.edttc.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_project(path)
+
+    assert loaded.stage_metadata[waypoint.node_id].display_name == "Legacy"
+    assert loaded.stage_metadata[waypoint.node_id].separator_before == ""
 
 
 def test_maximum_altitude_helpers_preserve_decimal_values() -> None:
@@ -258,6 +276,42 @@ def test_waypoint_group_operations_preserve_route_order() -> None:
     assert [
         waypoint.get("NextInstruction") for waypoint in document.waypoints
     ] == ["First", "Second", "First", "Second", "Third"]
+
+
+def test_add_waypoint_can_insert_after_a_selected_route_waypoint() -> None:
+    document = parse_text(SAMPLE)
+    first = document.waypoints[0].section
+    first.set_value("NextInstruction", "First")
+    second = document.add_waypoint("ShipPass")
+    second.set_value("NextInstruction", "Second")
+    third = document.add_waypoint("ShipPass")
+    third.set_value("NextInstruction", "Third")
+
+    inserted = document.add_waypoint(
+        "ShipPass",
+        after_node_id=second.node_id,
+    )
+    inserted.set_value("NextInstruction", "Inserted")
+
+    assert [
+        waypoint.get("NextInstruction") for waypoint in document.waypoints
+    ] == ["First", "Second", "Inserted", "Third"]
+
+
+def test_reverse_waypoints_requires_and_reverses_one_contiguous_range() -> None:
+    document = parse_text(SAMPLE)
+    first = document.waypoints[0].section
+    first.set_value("NextInstruction", "First")
+    second = document.add_waypoint("ShipPass")
+    second.set_value("NextInstruction", "Second")
+    third = document.add_waypoint("ShipPass")
+    third.set_value("NextInstruction", "Third")
+
+    assert not document.reverse_waypoints([first.node_id, third.node_id])
+    assert document.reverse_waypoints([first.node_id, second.node_id, third.node_id])
+    assert [
+        waypoint.get("NextInstruction") for waypoint in document.waypoints
+    ] == ["Third", "Second", "First"]
 
 
 def test_event_wrapper_and_inline_comments_are_lossless() -> None:
