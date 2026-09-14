@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "edtt-definer"
-version = "0.6.4"
+version = "0.6.5"
 description = "An unofficial Windows time-trial definition editor for EDCoPilot"
 readme = "README.md"
 license = { file = "LICENSE" }

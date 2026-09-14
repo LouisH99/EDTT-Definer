@@ -22,7 +22,12 @@ from edtt_definer.parser import parse_text
 from edtt_definer.project import AltitudeMode, ProjectData, StageMetadata, save_project
 from edtt_definer.theme import ThemeMode
 from edtt_definer.conversion import RaceVehicle, build_vehicle_conversion
-from edtt_definer.ui import APP_DISPLAY_NAME, MainWindow, RaceConversionDialog
+from edtt_definer.ui import (
+    APP_DISPLAY_NAME,
+    VALIDATION_GROUP_ROLE,
+    MainWindow,
+    RaceConversionDialog,
+)
 from edtt_definer.updates import ReleaseInfo
 
 from .test_parser import SAMPLE, WRAPPED_SAMPLE
@@ -56,7 +61,7 @@ class FakeUpdateClient(QObject):
 
 
 def test_patch_release_version_is_visible() -> None:
-    assert APP_DISPLAY_NAME == "EDTT Definer v0.6.4"
+    assert APP_DISPLAY_NAME == "EDTT Definer v0.6.5"
 
 
 def test_new_course_uses_authoring_defaults(qtbot) -> None:
@@ -345,17 +350,18 @@ def test_editor_only_section_divider_can_be_added_renamed_and_removed(
         for row in range(window.navigation.count())
         if window.navigation.item(row).data(Qt.ItemDataRole.UserRole) is None
     )
-    assert divider.text() == "──── Lap 1 ────"
+    assert divider.text() == "▾ ─── Lap 1 ───"
     assert divider.flags() & Qt.ItemFlag.ItemIsSelectable
     assert divider.font().bold()
     assert window.navigation.currentItem() is divider
     assert window.waypoint_buttons["Delete"].text() == "Delete section"
     assert window.preview.toPlainText() == original_export
 
-    window._navigation_item_double_clicked(divider)
+    window.edit_section_separator()
     assert window.project.metadata_for(waypoint.node_id).separator_before == "Canyon section"
     window.stage_form.waypoint_name.setText("Gate A")
     assert window.project.metadata_for(waypoint.node_id).separator_before == "Canyon section"
+    assert "Canyon section" in window.navigation.currentItem().text()
 
     waypoint_count = len(window.project.document.waypoints)
     window.delete_waypoint()
@@ -366,6 +372,102 @@ def test_editor_only_section_divider_can_be_added_renamed_and_removed(
         for row in range(window.navigation.count())
     )
     assert window.preview.toPlainText() == original_export
+    window.dirty = False
+
+
+def test_section_dividers_collapse_expand_and_reveal_external_selection(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    first = window.project.document.waypoints[0].section
+    second = window.add_waypoint()
+    third = window.add_waypoint()
+    fourth = window.add_waypoint()
+    window.project.metadata_for(first.node_id).separator_before = "Lap 1"
+    window.project.metadata_for(third.node_id).separator_before = "Lap 2"
+    window.refresh_navigation(first.node_id, select_divider_for=first.node_id)
+    window.dirty = False
+
+    first_divider = window.navigation.currentItem()
+    assert first_divider is not None
+    assert "Lap 1" in first_divider.text()
+    window._navigation_item_double_clicked(first_divider)
+
+    waypoint_items = {
+        window.navigation.item(row).data(Qt.ItemDataRole.UserRole):
+        window.navigation.item(row)
+        for row in range(window.navigation.count())
+        if window.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+    }
+    assert window.navigation.currentItem().text().startswith("▸")
+    assert waypoint_items[first.node_id].isHidden()
+    assert waypoint_items[second.node_id].isHidden()
+    assert not waypoint_items[third.node_id].isHidden()
+    assert not waypoint_items[fourth.node_id].isHidden()
+    assert not window.dirty
+
+    window._select_section_from_course(second.node_id)
+
+    waypoint_items = {
+        window.navigation.item(row).data(Qt.ItemDataRole.UserRole):
+        window.navigation.item(row)
+        for row in range(window.navigation.count())
+        if window.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+    }
+    assert window.current_section_id == second.node_id
+    assert first.node_id not in window._collapsed_route_sections
+    assert not waypoint_items[first.node_id].isHidden()
+    assert not waypoint_items[second.node_id].isHidden()
+    assert not window.dirty
+
+
+def test_selected_divider_duplicates_its_complete_section(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    first = window.project.document.waypoints[0].section
+    second = window.add_waypoint()
+    third = window.add_waypoint()
+    fourth = window.add_waypoint()
+    for section, instruction, name, separator in zip(
+        (first, second, third, fourth),
+        ("First", "Second", "Third", "Fourth"),
+        ("Alpha", "Bravo", "Charlie", "Delta"),
+        ("Lap 1", "", "Lap 2", ""),
+        strict=True,
+    ):
+        section.set_value("NextInstruction", instruction)
+        window.project.stage_metadata[section.node_id] = StageMetadata(
+            display_name=name,
+            separator_before=separator,
+        )
+        window.project.capture_metadata[section.node_id] = {
+            "heading": instruction,
+        }
+    window.refresh_navigation(first.node_id, select_divider_for=first.node_id)
+
+    assert window.waypoint_buttons["Duplicate"].text() == "Duplicate section"
+    assert window.waypoint_buttons["Duplicate"].isEnabled()
+    window.duplicate_waypoint()
+
+    route = [waypoint.section for waypoint in window.project.document.waypoints]
+    assert [section.value("NextInstruction") for section in route] == [
+        "First", "Second", "First", "Second", "Third", "Fourth",
+    ]
+    duplicate_first, duplicate_second = route[2:4]
+    assert window.project.metadata_for(duplicate_first.node_id).separator_before == "Lap 3"
+    assert window.project.metadata_for(duplicate_first.node_id).display_name == "Alpha (copy)"
+    assert window.project.metadata_for(duplicate_second.node_id).display_name == "Bravo (copy)"
+    assert window.project.capture_metadata[duplicate_first.node_id]["heading"] == "First"
+    assert window.project.capture_metadata[duplicate_second.node_id]["heading"] == "Second"
+    assert [section.node_id for section in window._selected_waypoints()] == [
+        duplicate_first.node_id,
+        duplicate_second.node_id,
+    ]
+    assert "Lap 1" not in window.preview.toPlainText()
+    assert "Lap 3" not in window.preview.toPlainText()
     window.dirty = False
 
 
@@ -839,6 +941,42 @@ def test_edsm_not_now_is_not_reprompted_automatically(qtbot, monkeypatch, tmp_pa
     window.dirty = False
 
 
+def test_edsm_permission_prompt_blocks_reentrant_live_updates(
+    qtbot, monkeypatch, tmp_path,
+) -> None:
+    fake = FakeEdsmClient()
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(edsm_client=fake, settings=settings)
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    window.refresh_navigation(waypoint.node_id)
+    snapshot = LocationSnapshot(
+        system="Reentrant System",
+        body="Reentrant Body",
+        latitude=Decimal("1"),
+        longitude=Decimal("2"),
+        flags=1 << 21,
+        flag_has_lat_long=True,
+    )
+    prompts = []
+
+    def ask_permission(system: str, body: str) -> str:
+        prompts.append((system, body))
+        window._consider_radius_for_selected(snapshot)
+        window._consider_radius_for_selected(snapshot)
+        return "not_now"
+
+    monkeypatch.setattr(window, "_ask_edsm_permission", ask_permission)
+
+    window._consider_radius_for_selected(snapshot)
+
+    assert prompts == [("Reentrant System", "Reentrant Body")]
+    assert fake.calls == []
+    assert not window._edsm_permission_prompt_active
+    window.dirty = False
+
+
 def test_edsm_always_permission_is_remembered(qtbot, monkeypatch, tmp_path) -> None:
     fake = FakeEdsmClient()
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
@@ -1220,6 +1358,83 @@ def test_collapsed_section_marks_and_reveals_validation_error(qtbot, tmp_path) -
     assert window.stage_form.speed_box.expanded
     assert window.stage_form.speed_box.header.property("hasValidationError") is False
     window.dirty = False
+
+
+def test_repeated_validation_results_expand_to_named_waypoints(qtbot) -> None:
+    document = parse_text(SAMPLE)
+    first = document.waypoints[0].section
+    assert document.duplicate_waypoint(first.node_id) is not None
+    assert document.duplicate_waypoint(first.node_id) is not None
+    project = ProjectData(document=document)
+    route = [waypoint.section for waypoint in document.waypoints]
+    for index, section in enumerate(route, start=1):
+        section.set_value("System", "")
+        section.set_value("Proximity", "100")
+        project.stage_metadata[section.node_id] = StageMetadata(
+            display_name=f"Gate {index}",
+        )
+
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(project, None, dirty=False)
+
+    warning_group = next(
+        window.validation_list.item(row)
+        for row in range(window.validation_list.count())
+        if "Gate waypoints normally omit Proximity"
+        in window.validation_list.item(row).text()
+    )
+    error_group = next(
+        window.validation_list.item(row)
+        for row in range(window.validation_list.count())
+        if "Surface coordinates require both System and Body"
+        in window.validation_list.item(row).text()
+    )
+    assert warning_group.text().startswith("▸ WARNING: 3 Waypoints")
+    assert error_group.text().startswith("▸ ERROR: 3 Waypoints")
+    assert warning_group.data(VALIDATION_GROUP_ROLE)
+    assert not window.dirty
+
+    window._jump_to_issue(warning_group)
+
+    warning_group = next(
+        window.validation_list.item(row)
+        for row in range(window.validation_list.count())
+        if (
+            window.validation_list.item(row).data(VALIDATION_GROUP_ROLE)
+            and "Gate waypoints normally omit Proximity"
+            in window.validation_list.item(row).text()
+        )
+    )
+    warning_children = [
+        window.validation_list.item(row)
+        for row in range(window.validation_list.count())
+        if (
+            not window.validation_list.item(row).data(VALIDATION_GROUP_ROLE)
+            and getattr(
+                window.validation_list.item(row).data(Qt.ItemDataRole.UserRole),
+                "message",
+                "",
+            )
+            == "Gate waypoints normally omit Proximity."
+        )
+    ]
+    assert warning_group.text().startswith("▾ WARNING: 3 Waypoints")
+    assert [item.text().strip() for item in warning_children] == [
+        "↳ Waypoint 1 — Gate 1",
+        "↳ Waypoint 2 — Gate 2",
+        "↳ Waypoint 3 — Gate 3",
+    ]
+    assert all(not item.isHidden() for item in warning_children)
+    assert not window.dirty
+
+    selected_issue = warning_children[1].data(Qt.ItemDataRole.UserRole)
+    window._jump_to_issue(warning_children[1])
+
+    assert window.current_section_id == selected_issue.section_id
+    assert window.stage_form.title.text() == "Waypoint 2 — Gate 2"
+    assert not window.dirty
 
 
 def test_theme_choice_is_applied_and_persisted(qtbot, tmp_path) -> None:

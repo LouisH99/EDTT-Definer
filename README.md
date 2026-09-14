@@ -2,7 +2,7 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.6.4**.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.6.5**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
@@ -18,7 +18,7 @@ EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot t
 
 ### Prebuilt Windows release
 
-Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.6.4.exe` from its **Assets** section, and run it. No installation is required.
+Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.6.5.exe` from its **Assets** section, and run it. No installation is required.
 
 The executable is not code-signed, so Windows SmartScreen may show its normal warning on first launch.
 
@@ -55,13 +55,19 @@ Python 3.13 is required. Using a virtual environment is recommended because it k
 
 ### Lap/section dividers and reverse laps
 
-Use **Section…** to place an editor-only named divider immediately before the active waypoint, for example `Lap 2` or `Canyon section`. Select a divider and use **Section…**, or double-click it, to rename it; select it and use **Delete section** to remove only the divider. Dividers make long and multi-lap routes easier to scan in the Race structure list. They are saved only in editable `*.edttc.json` projects and never appear in EDCoPilot TXT exports.
+Use **Section…** to place an editor-only named divider immediately before the active waypoint, for example `Lap 2` or `Canyon section`. Double-click a divider to collapse or expand all of its waypoints. Collapsing is a temporary view choice and never changes the project or EDCoPilot TXT. Select a divider and use **Section…** to rename it, or use **Delete section** to remove only the divider.
+
+When a divider is selected, **Duplicate** changes to **Duplicate section**. It copies every waypoint from that divider up to the next divider and places the complete copy immediately after the original. Numbered labels advance to the next unused number, so duplicating `Lap 1` when `Lap 2` already exists produces `Lap 3`.
 
 **Add** and **Capture + add** insert the new waypoint immediately after the active waypoint. When Event Info, Start, or End is active, the waypoint is added at the end of the route.
 
 To create a reverse lap, select one continuous waypoint range with Ctrl or Shift, choose **Duplicate**, and then choose **Reverse** while the copied group remains selected. The complete waypoint blocks are reversed without changing their coordinates, names, altitude rules, conditions, instructions, comments, unknown entries, or capture metadata. Divider boundaries remain at their route positions.
 
 Reversal does not reinterpret heading/direction conditions, gate endpoint order, or spoken instructions. The confirmation shows the exact order before and after and reminds the author to review direction-specific content.
+
+### Grouped validation results
+
+Repeated identical errors or warnings are shown as one collapsed validation group with the number of affected waypoints, rather than repeating an indistinguishable message for every waypoint. Double-click the group to reveal the numbered and named waypoints responsible, then double-click a child row to open that waypoint. Unique validation results remain unchanged.
 
 ### Convert the whole race vehicle
 

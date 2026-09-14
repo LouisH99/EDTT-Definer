@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.5 — 2026-09-14
+
+- Fix repeated EDSM permission dialogs caused by live updates re-entering the radius lookup while the first modal prompt was still open.
+- Add collapsible lap/section dividers to the Race Structure list without changing project or EDCoPilot formats ([#2](https://github.com/LouisH99/EDTT-Definer/issues/2)).
+- Let **Duplicate section** copy every waypoint in the selected section, including complete syntax blocks and editor metadata, with automatic next-unused numbering for lap labels.
+- Collapse repeated identical validation results into count summaries that expand to show and navigate to each affected waypoint.
+
 ## v0.6.4 — 2026-09-11
 
 - Add editor-only named lap/section dividers to make long and multi-lap routes easier to scan without changing EDCoPilot TXT.

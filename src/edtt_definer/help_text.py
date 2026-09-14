@@ -135,8 +135,8 @@ HELP_TEXT = {
         "Select Event Info, Start, a numbered Waypoint, or End to edit it in the centre pane. "
         "Hold Ctrl to select separate waypoints or Shift to select a range for grouped duplicate, "
         "delete, move, and reverse actions. The active item remains the only one edited by the form. "
-        "Bold divider rows are editor-only lap or section labels; select one to edit or delete it, or "
-        "double-click it to rename it."
+        "Bold divider rows are editor-only lap or section labels. Double-click a divider to collapse "
+        "or expand its waypoints; select it to edit, duplicate, or delete the section marker."
     ),
     "add_waypoint": (
         "Add a new waypoint immediately after the active waypoint. If Start, End, or Event Info is active, "
@@ -150,6 +150,11 @@ HELP_TEXT = {
         "Duplicate all selected waypoints as one route-ordered group immediately after the last selected "
         "waypoint. Names, altitude settings, comments, unknown entries, and capture metadata are copied."
     ),
+    "duplicate_section": (
+        "Duplicate every waypoint from the selected divider up to the next divider. The complete section is "
+        "inserted immediately after the original, including names, altitude settings, comments, unknown entries, "
+        "and capture metadata. Numbered labels such as Lap 1 advance to the next unused number."
+    ),
     "delete_waypoint": (
         "Delete all selected waypoints and their editor-only metadata. Multiple deletions require "
         "confirmation, and at least one waypoint must remain."
@@ -161,8 +166,9 @@ HELP_TEXT = {
     "move_down": "Move all selected waypoints one place later while preserving their relative order and complete data.",
     "section_separator": (
         "Add, rename, or remove an editor-only lap/section divider immediately before the active waypoint. "
-        "Select an existing divider and use this button or double-click the divider to rename it. Examples: Lap 2 "
-        "or Canyon section. Dividers are saved in editable projects and never exported to EDCoPilot."
+        "Select an existing divider and use this button to rename it; double-click the divider itself to collapse "
+        "or expand its waypoints. Examples: Lap 2 or Canyon section. Dividers are saved in editable projects and "
+        "never exported to EDCoPilot."
     ),
     "reverse_waypoints": (
         "Reverse one continuous range of two or more selected waypoints. Complete waypoint data stays together, "
@@ -173,7 +179,11 @@ HELP_TEXT = {
         "Override the automatically detected Elite Dangerous Saved Games journal folder. EDTT Definer "
         "watches this directory, Status.json, and the newest journal and reads them only after changes."
     ),
-    "validation": "Double-click an issue to select its section and reveal a collapsed area containing the problem.",
+    "validation": (
+        "Review export-blocking errors and non-blocking warnings. Repeated identical issues are collapsed into one "
+        "row showing the affected waypoint count; double-click the group to reveal each waypoint. Double-click an "
+        "individual issue or waypoint row to select its section and reveal the form area containing the problem."
+    ),
     "preview": "Read-only preview of the exact EDCoPilot TXT that Create EDCoPilot TXT will write.",
     "course_body": (
         "Choose which System and Body to display. Stages on different bodies cannot share one accurate "

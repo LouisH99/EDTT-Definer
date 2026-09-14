@@ -124,6 +124,9 @@ ISSUES_URL = f"{REPOSITORY_URL}/issues"
 RELEASES_URL = f"{REPOSITORY_URL}/releases"
 NAV_DIVIDER_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 NAV_TARGET_ROLE = int(Qt.ItemDataRole.UserRole) + 2
+NAV_SECTION_OWNER_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+VALIDATION_GROUP_ROLE = int(Qt.ItemDataRole.UserRole) + 10
+VALIDATION_GROUP_KEY_ROLE = int(Qt.ItemDataRole.UserRole) + 11
 
 
 def _editable_combo(values: list[str]) -> QComboBox:
@@ -1401,6 +1404,9 @@ class MainWindow(QMainWindow):
         self._radius_explicit_requests: set[tuple[str, str]] = set()
         self._radius_prompted: set[tuple[str, str]] = set()
         self._radius_lookup_attempted: set[tuple[str, str]] = set()
+        self._edsm_permission_prompt_active = False
+        self._collapsed_route_sections: set[str] = set()
+        self._expanded_validation_groups: set[str] = set()
         self.live_result = LiveResult(LiveState.MISSING, None, "Waiting for game data.")
         self.trace_recorder = TraceRecorder()
         self.project = ProjectData.new()
@@ -1724,6 +1730,8 @@ class MainWindow(QMainWindow):
 
     def _set_project(self, project: ProjectData, path: Path | None, *, dirty: bool) -> None:
         self.trace_recorder.clear()
+        self._collapsed_route_sections.clear()
+        self._expanded_validation_groups.clear()
         self.project = project
         self.project_path = path
         self.dirty = dirty
@@ -1750,15 +1758,28 @@ class MainWindow(QMainWindow):
         selected_ids: list[str] | set[str] | None = None,
         select_divider_for: str | None = None,
     ) -> None:
+        requested_select_id = select_id
+        current_item = self.navigation.currentItem()
+        if (
+            select_divider_for is None
+            and requested_select_id is None
+            and self._is_navigation_divider(current_item)
+        ):
+            select_divider_for = current_item.data(NAV_TARGET_ROLE)
         select_id = select_id or self.current_section_id
+        if requested_select_id is not None and select_divider_for is None:
+            section_owner = self._route_section_owner(select_id)
+            if section_owner is not None:
+                self._collapsed_route_sections.discard(section_owner)
         selected_set = set(selected_ids or ())
-        if not selected_set and select_id:
+        if not selected_set and select_id and select_divider_for is None:
             selected_set.add(select_id)
         blocker = QSignalBlocker(self.navigation)
         self.navigation.clear()
         waypoint_number = 0
         selected_row = 0
         selected_divider_row: int | None = None
+        route_section_owner: str | None = None
         for section in self.project.document.sections():
             kind = section.section_type
             if kind is SectionType.EVENTINFO:
@@ -1774,7 +1795,10 @@ class MainWindow(QMainWindow):
                 )
                 separator = metadata.separator_before.strip()
                 if separator:
-                    divider = QListWidgetItem(f"──── {separator} ────")
+                    route_section_owner = section.node_id
+                    collapsed = route_section_owner in self._collapsed_route_sections
+                    arrow = "▸" if collapsed else "▾"
+                    divider = QListWidgetItem(f"{arrow} ─── {separator} ───")
                     divider.setData(NAV_DIVIDER_ROLE, True)
                     divider.setData(NAV_TARGET_ROLE, section.node_id)
                     divider.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1783,12 +1807,14 @@ class MainWindow(QMainWindow):
                     divider.setFont(divider_font)
                     divider.setData(
                         Qt.ItemDataRole.AccessibleTextRole,
-                        f"Section divider: {separator}",
+                        f"Section divider: {separator}; "
+                        f"{'collapsed' if collapsed else 'expanded'}",
                     )
                     divider.setToolTip(
-                        "Editor-only lap/section divider. Select it and use Section… or "
-                        "double-click to rename it; use Delete to remove only the divider. "
-                        "It is not exported to EDCoPilot."
+                        "Double-click to collapse or expand this editor-only section. "
+                        "Select it and use Section… to rename it, Duplicate section to copy "
+                        "all of its waypoints, or Delete section to remove only the divider. "
+                        "The divider is not exported to EDCoPilot."
                     )
                     self.navigation.addItem(divider)
                     if section.node_id == select_divider_for:
@@ -1801,7 +1827,13 @@ class MainWindow(QMainWindow):
                 label = f"Unknown: {section.name}"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, section.node_id)
+            if kind is SectionType.WAYPOINT:
+                item.setData(NAV_SECTION_OWNER_ROLE, route_section_owner)
             self.navigation.addItem(item)
+            if kind is SectionType.WAYPOINT:
+                item.setHidden(
+                    route_section_owner in self._collapsed_route_sections
+                )
             if section.node_id == select_id:
                 selected_row = self.navigation.count() - 1
         if selected_divider_row is not None:
@@ -1842,6 +1874,32 @@ class MainWindow(QMainWindow):
         section = self.project.document.section_by_id(node_id)
         return section.name.title() if section is not None else "Stage"
 
+    def _route_section_owner(self, waypoint_id: str) -> str | None:
+        owner: str | None = None
+        for waypoint in self.project.document.waypoints:
+            section = waypoint.section
+            if self.project.metadata_for(section.node_id).separator_before.strip():
+                owner = section.node_id
+            if section.node_id == waypoint_id:
+                return owner
+        return None
+
+    def _route_section_waypoints(self, divider_id: str) -> list[SectionNode]:
+        members: list[SectionNode] = []
+        collecting = False
+        for waypoint in self.project.document.waypoints:
+            section = waypoint.section
+            has_divider = bool(
+                self.project.metadata_for(section.node_id).separator_before.strip()
+            )
+            if section.node_id == divider_id and has_divider:
+                collecting = True
+            elif collecting and has_divider:
+                break
+            if collecting:
+                members.append(section)
+        return members
+
     def _navigation_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current:
             node_id = self._navigation_node_id(current)
@@ -1850,7 +1908,7 @@ class MainWindow(QMainWindow):
 
     def _navigation_item_double_clicked(self, item: QListWidgetItem) -> None:
         if self._is_navigation_divider(item):
-            self.edit_section_separator()
+            self.toggle_selected_section_collapsed()
 
     def _navigation_selection_changed(self) -> None:
         self._update_waypoint_action_buttons()
@@ -1917,17 +1975,22 @@ class MainWindow(QMainWindow):
         self._sync_current_stage_metadata()
         section = self.project.document.section_by_id(self.current_section_id or "")
         if section and section.section_type is SectionType.WAYPOINT:
-            item = self.navigation.currentItem()
+            item = next(
+                (
+                    self.navigation.item(row)
+                    for row in range(self.navigation.count())
+                    if self.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+                    == section.node_id
+                ),
+                None,
+            )
             if item:
-                waypoint_number = sum(
-                    1
-                    for row in range(self.navigation.currentRow() + 1)
-                    if self.project.document.section_by_id(
-                        self.navigation.item(row).data(Qt.ItemDataRole.UserRole)
+                waypoint_number = next(
+                    index
+                    for index, waypoint in enumerate(
+                        self.project.document.waypoints, start=1
                     )
-                    and self.project.document.section_by_id(
-                        self.navigation.item(row).data(Qt.ItemDataRole.UserRole)
-                    ).section_type is SectionType.WAYPOINT
+                    if waypoint.section.node_id == section.node_id
                 )
                 name = self.project.stage_metadata[section.node_id].display_name.strip()
                 label = f"Waypoint {waypoint_number}" + (f" — {name}" if name else "")
@@ -1941,19 +2004,24 @@ class MainWindow(QMainWindow):
         issues = validate_project(self.project)
         self.validation_issues = issues
         self.validation_list.clear()
-        errors = 0
-        warnings = 0
+        errors = sum(issue.severity is Severity.ERROR for issue in issues)
+        warnings = len(issues) - errors
+        grouped: dict[tuple[Severity, str], list[ValidationIssue]] = {}
         for issue in issues:
-            prefix = "ERROR" if issue.severity is Severity.ERROR else "WARNING"
-            item = QListWidgetItem(f"{prefix}: {issue.message}")
-            item.setData(Qt.ItemDataRole.UserRole, issue)
-            if issue.severity is Severity.ERROR:
-                errors += 1
-                item.setForeground(semantic_color("error", self))
+            grouped.setdefault((issue.severity, issue.message), []).append(issue)
+        collapsible_keys = {
+            self._validation_group_key(group[0])
+            for group in grouped.values()
+            if len(group) > 1 and all(issue.section_id for issue in group)
+        }
+        self._expanded_validation_groups.intersection_update(collapsible_keys)
+
+        for group in grouped.values():
+            if len(group) > 1 and all(issue.section_id for issue in group):
+                self._add_validation_group(group)
             else:
-                warnings += 1
-                item.setForeground(semantic_color("warning", self))
-            self.validation_list.addItem(item)
+                for issue in group:
+                    self._add_validation_issue_item(issue)
         self.preview.setPlainText(serialize_document(self.project.document))
         if hasattr(self, "course_view"):
             self.course_view.refresh_project(
@@ -1961,6 +2029,101 @@ class MainWindow(QMainWindow):
             )
         self.statusBar().showMessage(f"{errors} error(s), {warnings} warning(s)")
         self._update_collapsible_validation(issues)
+
+    @staticmethod
+    def _validation_group_key(issue: ValidationIssue) -> str:
+        return f"{issue.severity.value}\0{issue.message}"
+
+    def _set_validation_item_color(
+        self,
+        item: QListWidgetItem,
+        severity: Severity,
+    ) -> None:
+        color_name = "error" if severity is Severity.ERROR else "warning"
+        item.setForeground(semantic_color(color_name, self))
+
+    def _add_validation_issue_item(
+        self,
+        issue: ValidationIssue,
+        *,
+        location_only: bool = False,
+        hidden: bool = False,
+    ) -> QListWidgetItem:
+        prefix = "ERROR" if issue.severity is Severity.ERROR else "WARNING"
+        text = (
+            f"    ↳ {self._validation_location_label(issue)}"
+            if location_only
+            else f"{prefix}: {issue.message}"
+        )
+        item = QListWidgetItem(text)
+        item.setData(Qt.ItemDataRole.UserRole, issue)
+        self._set_validation_item_color(item, issue.severity)
+        if location_only:
+            item.setToolTip(
+                f"{prefix}: {issue.message}\nDouble-click to open "
+                f"{self._validation_location_label(issue)}."
+            )
+            item.setData(
+                Qt.ItemDataRole.AccessibleTextRole,
+                f"{self._validation_location_label(issue)}: {prefix}, "
+                f"{issue.message}; double-click to open",
+            )
+        self.validation_list.addItem(item)
+        item.setHidden(hidden)
+        return item
+
+    def _add_validation_group(self, issues: list[ValidationIssue]) -> None:
+        first = issues[0]
+        key = self._validation_group_key(first)
+        expanded = key in self._expanded_validation_groups
+        prefix = "ERROR" if first.severity is Severity.ERROR else "WARNING"
+        sections = [
+            self.project.document.section_by_id(issue.section_id or "")
+            for issue in issues
+        ]
+        all_waypoints = all(
+            section is not None and section.section_type is SectionType.WAYPOINT
+            for section in sections
+        )
+        affected = f"{len(issues)} {'Waypoints' if all_waypoints else 'Sections'}"
+        arrow = "▾" if expanded else "▸"
+        item = QListWidgetItem(
+            f"{arrow} {prefix}: {affected} — {first.message}"
+        )
+        item.setData(Qt.ItemDataRole.UserRole, first)
+        item.setData(VALIDATION_GROUP_ROLE, True)
+        item.setData(VALIDATION_GROUP_KEY_ROLE, key)
+        item.setToolTip(
+            "Double-click to show or hide the affected sections. "
+            "Expand the group, then double-click a waypoint to open it."
+        )
+        item.setData(
+            Qt.ItemDataRole.AccessibleTextRole,
+            f"{prefix}: {affected}: {first.message}; "
+            f"{'expanded' if expanded else 'collapsed'}",
+        )
+        self._set_validation_item_color(item, first.severity)
+        self.validation_list.addItem(item)
+        for issue in issues:
+            self._add_validation_issue_item(
+                issue,
+                location_only=True,
+                hidden=not expanded,
+            )
+
+    def _validation_location_label(self, issue: ValidationIssue) -> str:
+        section = self.project.document.section_by_id(issue.section_id or "")
+        if section is None:
+            return "Document"
+        if section.section_type is SectionType.WAYPOINT:
+            return self._waypoint_route_label(section)
+        if section.section_type is SectionType.EVENTINFO:
+            return "Event Info"
+        if section.section_type is SectionType.START:
+            return "Start"
+        if section.section_type is SectionType.END:
+            return "End"
+        return f"[{section.name}]"
 
     def _collapsible_for_issue(self, issue: ValidationIssue) -> CollapsibleSection | None:
         section = self.project.document.section_by_id(issue.section_id or "")
@@ -2020,13 +2183,24 @@ class MainWindow(QMainWindow):
             section.set_validation_error_count(count)
 
     def _jump_to_issue(self, item: QListWidgetItem) -> None:
-        issue: ValidationIssue = item.data(Qt.ItemDataRole.UserRole)
-        if issue.section_id:
-            for row in range(self.navigation.count()):
-                nav_item = self.navigation.item(row)
-                if nav_item.data(Qt.ItemDataRole.UserRole) == issue.section_id:
-                    self.navigation.setCurrentRow(row)
+        if item.data(VALIDATION_GROUP_ROLE):
+            key = item.data(VALIDATION_GROUP_KEY_ROLE)
+            if key in self._expanded_validation_groups:
+                self._expanded_validation_groups.discard(key)
+            else:
+                self._expanded_validation_groups.add(key)
+            self.refresh_validation_and_preview()
+            for row in range(self.validation_list.count()):
+                refreshed = self.validation_list.item(row)
+                if refreshed.data(VALIDATION_GROUP_KEY_ROLE) == key:
+                    self.validation_list.setCurrentItem(refreshed)
                     break
+            return
+        issue = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(issue, ValidationIssue):
+            return
+        if issue.section_id:
+            self._select_navigation_section(issue.section_id)
         target = self._collapsible_for_issue(issue)
         if target is not None:
             target.set_expanded(True)
@@ -2043,6 +2217,14 @@ class MainWindow(QMainWindow):
             )
 
     def _select_section_from_course(self, section_id: str) -> None:
+        self._select_navigation_section(section_id)
+
+    def _select_navigation_section(self, section_id: str) -> None:
+        owner = self._route_section_owner(section_id)
+        if owner in self._collapsed_route_sections:
+            self._collapsed_route_sections.discard(owner)
+            self.refresh_navigation(section_id)
+            return
         for row in range(self.navigation.count()):
             item = self.navigation.item(row)
             if item.data(Qt.ItemDataRole.UserRole) == section_id:
@@ -2577,6 +2759,8 @@ class MainWindow(QMainWindow):
             return
         selected_ids = [item.node_id for item in self._selected_waypoints()]
         metadata.separator_before = label
+        if not previous or not label:
+            self._collapsed_route_sections.discard(section.node_id)
         self.dirty = True
         self.refresh_navigation(
             section.node_id,
@@ -2587,6 +2771,30 @@ class MainWindow(QMainWindow):
         self._update_title()
         action = "Added" if label and not previous else "Updated" if label else "Removed"
         self.statusBar().showMessage(f"{action} lap/section divider.", 5000)
+
+    def toggle_selected_section_collapsed(self) -> None:
+        item = self.navigation.currentItem()
+        if not self._is_navigation_divider(item):
+            return
+        divider_id = item.data(NAV_TARGET_ROLE)
+        members = self._route_section_waypoints(divider_id)
+        if not members:
+            return
+        label = self.project.metadata_for(divider_id).separator_before.strip()
+        if divider_id in self._collapsed_route_sections:
+            self._collapsed_route_sections.discard(divider_id)
+            action = "Expanded"
+        else:
+            self._collapsed_route_sections.add(divider_id)
+            action = "Collapsed"
+        self.refresh_navigation(
+            divider_id,
+            select_divider_for=divider_id,
+        )
+        self.statusBar().showMessage(
+            f"{action} {label} ({len(members)} waypoint(s)).",
+            5000,
+        )
 
     def _confirm_reverse_waypoints(self, sections: list[SectionNode]) -> bool:
         labels = [self._waypoint_route_label(section) for section in sections]
@@ -2661,7 +2869,20 @@ class MainWindow(QMainWindow):
         )
 
     def duplicate_waypoint(self) -> None:
-        sources = self._selected_waypoints()
+        duplicating_section = self._is_navigation_divider(
+            self.navigation.currentItem()
+        )
+        section_label = ""
+        if duplicating_section:
+            divider = self._current_waypoint()
+            if divider is None:
+                return
+            sources = self._route_section_waypoints(divider.node_id)
+            section_label = self.project.metadata_for(
+                divider.node_id
+            ).separator_before.strip()
+        else:
+            sources = self._selected_waypoints()
         if not sources:
             return
         self._sync_current_stage_metadata()
@@ -2703,9 +2924,14 @@ class MainWindow(QMainWindow):
         )
         self.refresh_validation_and_preview()
         self._update_title()
-        self.statusBar().showMessage(
-            f"Duplicated {len(duplicates)} waypoint(s) as one group.", 5000
-        )
+        if duplicating_section:
+            message = (
+                f"Duplicated section {section_label} "
+                f"({len(duplicates)} waypoint(s))."
+            )
+        else:
+            message = f"Duplicated {len(duplicates)} waypoint(s) as one group."
+        self.statusBar().showMessage(message, 5000)
 
     def delete_waypoint(self) -> None:
         if self._is_navigation_divider(self.navigation.currentItem()):
@@ -2716,6 +2942,7 @@ class MainWindow(QMainWindow):
             if not metadata.separator_before:
                 return
             metadata.separator_before = ""
+            self._collapsed_route_sections.discard(section.node_id)
             self.dirty = True
             self.refresh_navigation(section.node_id)
             self.refresh_validation_and_preview()
@@ -3001,10 +3228,19 @@ class MainWindow(QMainWindow):
             return
         permission = self.settings.value("edsm_radius_permission", "ask", str)
         if permission != "always":
-            if automatic and key in self._radius_prompted:
+            if automatic and (
+                key in self._radius_prompted
+                or self._edsm_permission_prompt_active
+            ):
                 return
-            decision = self._ask_edsm_permission(system, body)
+            if self._edsm_permission_prompt_active:
+                return
             self._radius_prompted.add(key)
+            self._edsm_permission_prompt_active = True
+            try:
+                decision = self._ask_edsm_permission(system, body)
+            finally:
+                self._edsm_permission_prompt_active = False
             if decision == "always":
                 self.settings.setValue("edsm_radius_permission", "always")
             elif decision != "once":
@@ -3127,8 +3363,19 @@ class MainWindow(QMainWindow):
         )
         selected = self._selected_waypoints()
         has_waypoints = bool(selected)
-        for label in ("Duplicate", "Move up", "Move down"):
+        for label in ("Move up", "Move down"):
             self.waypoint_buttons[label].setEnabled(has_waypoints)
+        duplicate_button = self.waypoint_buttons["Duplicate"]
+        duplicate_button.setEnabled(divider_selected or has_waypoints)
+        duplicate_button.setText(
+            "Duplicate section" if divider_selected else "Duplicate"
+        )
+        set_help_text(
+            duplicate_button,
+            HELP_TEXT[
+                "duplicate_section" if divider_selected else "duplicate_waypoint"
+            ],
+        )
         delete_button = self.waypoint_buttons["Delete"]
         delete_button.setEnabled(divider_selected or has_waypoints)
         delete_button.setText("Delete section" if divider_selected else "Delete")

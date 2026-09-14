@@ -1,5 +1,5 @@
 param(
-    [string]$Name = "EDTT-Definer-v0.6.4"
+    [string]$Name = "EDTT-Definer-v0.6.5"
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,9 +11,17 @@ if (-not (Test-Path -LiteralPath $Python)) {
     throw "Python environment not found. Create .\venv or use the development workspace venv."
 }
 $PreviousExecutableName = $env:EDTT_EXE_NAME
+$PreviousPythonPath = $env:PYTHONPATH
+$SourcePath = Join-Path $PSScriptRoot "src"
 
 try {
     $env:EDTT_EXE_NAME = $Name
+    $env:PYTHONPATH = if ([string]::IsNullOrWhiteSpace($PreviousPythonPath)) {
+        $SourcePath
+    }
+    else {
+        "$SourcePath$([IO.Path]::PathSeparator)$PreviousPythonPath"
+    }
     & $Python -m PyInstaller --noconfirm --clean (Join-Path $PSScriptRoot "edtt_definer.spec")
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller build failed with exit code $LASTEXITCODE"
@@ -25,6 +33,12 @@ finally {
     }
     else {
         $env:EDTT_EXE_NAME = $PreviousExecutableName
+    }
+    if ($null -eq $PreviousPythonPath) {
+        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:PYTHONPATH = $PreviousPythonPath
     }
 }
 
