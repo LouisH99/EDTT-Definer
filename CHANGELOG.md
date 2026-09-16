@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix live coordinates and race-line recording being incorrectly marked stale when Elite's embedded `Status.json` timestamp lags behind the PC clock while the file is still updating.
+
 ## v0.6.5 — 2026-09-14
 
 - Fix repeated EDSM permission dialogs caused by live updates re-entering the radius lookup while the first modal prompt was still open.

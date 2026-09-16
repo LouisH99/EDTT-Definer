@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import winreg
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
@@ -182,13 +182,10 @@ def _decimal(value: Any) -> Decimal | None:
         return None
 
 
-def _timestamp_age_seconds(value: str | None) -> float | None:
-    if not value:
-        return None
+def _file_age_seconds(path: Path) -> float | None:
     try:
-        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds()
-    except ValueError:
+        return max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
         return None
 
 
@@ -264,9 +261,18 @@ class LiveLocationReader:
             snapshot.body_radius_km = record.radius_km
             snapshot.body_radius_source = self._cached_source(record)
         self.last_snapshot = snapshot
-        age = _timestamp_age_seconds(snapshot.timestamp)
+        # Status.json's embedded timestamp can lag behind the PC clock even
+        # while Elite is actively replacing the file with new coordinates.
+        # File age measures the update we actually observed and avoids
+        # misclassifying continuously changing game data as stale. The UI's
+        # file-watch timer handles ongoing no-change detection after this read.
+        age = _file_age_seconds(path)
         if age is not None and age > self.stale_after:
-            return LiveResult(LiveState.STALE, snapshot, f"Game data is stale ({int(age)} seconds old).")
+            return LiveResult(
+                LiveState.STALE,
+                snapshot,
+                f"Status.json has not changed for {int(age)} seconds.",
+            )
         if not snapshot.has_coordinates:
             return LiveResult(LiveState.NO_COORDINATES, snapshot, "Game connected, but no planetary coordinates are available.")
         if snapshot.flag_has_lat_long is False:

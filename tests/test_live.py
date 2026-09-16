@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from edtt_definer.live import (
@@ -44,6 +44,51 @@ def test_live_status_and_journal_context(tmp_path: Path) -> None:
     assert result.snapshot.system == "Sol"
     assert result.snapshot.station == "Test Port"
     assert str(result.snapshot.latitude) == "-12.345678"
+
+
+def test_changing_status_ignores_lagging_embedded_timestamp(tmp_path: Path) -> None:
+    lagging_timestamp = (
+        datetime.now(timezone.utc) - timedelta(seconds=18)
+    ).isoformat().replace("+00:00", "Z")
+    reader = LiveLocationReader(tmp_path, stale_after=15)
+
+    write_status(
+        tmp_path,
+        timestamp=lagging_timestamp,
+        BodyName="Clock Skew Body",
+        Latitude=1,
+        Longitude=2,
+    )
+    first = reader.poll()
+    write_status(
+        tmp_path,
+        timestamp=lagging_timestamp,
+        BodyName="Clock Skew Body",
+        Latitude=3,
+        Longitude=4,
+    )
+    second = reader.poll()
+
+    assert first.state is LiveState.LIVE
+    assert second.state is LiveState.LIVE
+    assert str(second.snapshot.latitude) == "3"
+    assert str(second.snapshot.longitude) == "4"
+
+
+def test_old_status_file_is_stale_even_with_valid_coordinates(tmp_path: Path) -> None:
+    write_status(
+        tmp_path,
+        BodyName="Old Body",
+        Latitude=1,
+        Longitude=2,
+    )
+    old_time = datetime.now(timezone.utc).timestamp() - 60
+    os.utime(tmp_path / "Status.json", (old_time, old_time))
+
+    result = LiveLocationReader(tmp_path, stale_after=15).poll()
+
+    assert result.state is LiveState.STALE
+    assert result.message.startswith("Status.json has not changed for ")
 
 
 def test_appended_journal_line_is_not_skipped(tmp_path: Path) -> None:
