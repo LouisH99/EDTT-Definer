@@ -7,7 +7,14 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QSettings, QSignalBlocker, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QFont
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QCloseEvent,
+    QDesktopServices,
+    QFont,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -203,80 +210,102 @@ class SimpleListEditor(QWidget):
 class InstructionEditor(QWidget):
     changed = Signal()
 
+    TERSE_PREFIX = "Terse:"
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.list = QListWidget()
-        self.edit = QLineEdit()
-        self.edit.setPlaceholderText("Instruction spoken after this stage")
-        self.terse = QCheckBox("Terse")
-        add = QPushButton("Add / update")
-        remove = QPushButton("Remove")
-        add.clicked.connect(self._add_or_update)
-        remove.clicked.connect(self._remove)
-        self.edit.returnPressed.connect(self._add_or_update)
-        self.list.currentItemChanged.connect(self._selected)
-        row = QHBoxLayout()
-        row.addWidget(self.terse)
-        row.addWidget(self.edit, 1)
-        row.addWidget(add)
-        row.addWidget(remove)
+        self.edit = QPlainTextEdit()
+        self.edit.setMinimumHeight(110)
+        self.edit.setPlaceholderText(
+            "One instruction per line. Prefix a line with Terse: for EDCoPilot's shorter speech mode."
+        )
+        self.terse_button = QPushButton("Insert Terse:")
+        self.terse_button.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.addWidget(self.terse_button)
+        controls.addStretch(1)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.list)
-        layout.addLayout(row)
+        layout.addLayout(controls)
+        layout.addWidget(self.edit)
+        self.edit.textChanged.connect(self.changed)
+        self.terse_button.clicked.connect(self._insert_terse)
         set_help(self, "instructions")
-        set_help(self.list, "instructions")
         set_help(self.edit, "instructions")
-        set_help(self.terse, "terse")
-        set_help(add, "list_add")
-        set_help(remove, "list_remove")
+        set_help(self.terse_button, "terse")
 
     def values(self) -> list[str]:
-        return [self.list.item(index).data(Qt.ItemDataRole.UserRole) for index in range(self.list.count())]
+        return [
+            line
+            for line in self.edit.toPlainText().splitlines()
+            if line.strip()
+        ]
 
     def set_values(self, values: list[str]) -> None:
-        self.list.clear()
-        for value in values:
-            self._append(value)
-        self.edit.clear()
-        self.terse.setChecked(False)
+        blocker = QSignalBlocker(self.edit)
+        self.edit.setPlainText("\n".join(values))
+        del blocker
 
-    def _append(self, value: str) -> None:
-        terse = value.startswith("Terse:")
-        text = value[6:] if terse else value
-        item = QListWidgetItem(("[Terse] " if terse else "") + text)
-        item.setData(Qt.ItemDataRole.UserRole, value)
-        self.list.addItem(item)
+    def _insert_terse(self) -> None:
+        cursor = self.edit.textCursor()
+        document = self.edit.document()
+        prefix_length = len(self.TERSE_PREFIX)
 
-    def _selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
-        if not current:
+        if not cursor.hasSelection():
+            block = cursor.block()
+            if block.text().strip():
+                if block.text().lstrip().startswith(self.TERSE_PREFIX):
+                    self.edit.setFocus()
+                    return
+                insertion_position = block.position()
+                original_position = cursor.position()
+                edit_cursor = QTextCursor(document)
+                edit_cursor.beginEditBlock()
+                edit_cursor.setPosition(insertion_position)
+                edit_cursor.insertText(self.TERSE_PREFIX)
+                edit_cursor.endEditBlock()
+                cursor.setPosition(original_position + prefix_length)
+                self.edit.setTextCursor(cursor)
+            else:
+                cursor.insertText(self.TERSE_PREFIX)
+                self.edit.setTextCursor(cursor)
+            self.edit.setFocus()
             return
-        value = current.data(Qt.ItemDataRole.UserRole)
-        terse = value.startswith("Terse:")
-        self.terse.setChecked(terse)
-        self.edit.setText(value[6:] if terse else value)
 
-    def _add_or_update(self) -> None:
-        text = self.edit.text().strip()
-        if not text:
-            return
-        value = f"Terse:{text}" if self.terse.isChecked() else text
-        item = self.list.currentItem()
-        if item:
-            item.setText(("[Terse] " if self.terse.isChecked() else "") + text)
-            item.setData(Qt.ItemDataRole.UserRole, value)
-        else:
-            self._append(value)
-        self.list.clearSelection()
-        self.edit.clear()
-        self.terse.setChecked(False)
-        self.changed.emit()
+        selection_start = cursor.selectionStart()
+        selection_end = cursor.selectionEnd()
+        block = document.findBlock(selection_start)
+        final_block = document.findBlock(max(selection_start, selection_end - 1))
+        insertion_positions: list[int] = []
+        while block.isValid():
+            text = block.text()
+            if text.strip() and not text.lstrip().startswith(self.TERSE_PREFIX):
+                insertion_positions.append(block.position())
+            if block == final_block:
+                break
+            block = block.next()
 
-    def _remove(self) -> None:
-        row = self.list.currentRow()
-        if row >= 0:
-            self.list.takeItem(row)
-            self.changed.emit()
+        if insertion_positions:
+            edit_cursor = QTextCursor(document)
+            edit_cursor.beginEditBlock()
+            for position in reversed(insertion_positions):
+                edit_cursor.setPosition(position)
+                edit_cursor.insertText(self.TERSE_PREFIX)
+            edit_cursor.endEditBlock()
+
+            adjusted_start = selection_start + prefix_length * sum(
+                position <= selection_start for position in insertion_positions
+            )
+            adjusted_end = selection_end + prefix_length * sum(
+                position < selection_end for position in insertion_positions
+            )
+            cursor.setPosition(adjusted_start)
+            cursor.setPosition(adjusted_end, QTextCursor.MoveMode.KeepAnchor)
+            self.edit.setTextCursor(cursor)
+        self.edit.setFocus()
 
 
 class ConditionEditor(QWidget):

@@ -44,6 +44,10 @@ from .theme import is_dark_theme, semantic_color
 from .trace import RaceTrace, TraceState
 
 
+DEFAULT_OVERVIEW_YAW_DEGREES = 0.0
+DEFAULT_OVERVIEW_TILT_DEGREES = 45.0
+
+
 def _with_alpha(color: QColor, alpha: int) -> QColor:
     result = QColor(color)
     result.setAlpha(alpha)
@@ -117,8 +121,8 @@ class CourseCanvas(QWidget):
         self.scene = build_course_scene(ProjectData.new())
         self.selected_section_id: str | None = None
         self.hovered_section_id: str | None = None
-        self.yaw_degrees = 0.0
-        self.tilt_degrees = 0.0
+        self.yaw_degrees = DEFAULT_OVERVIEW_YAW_DEGREES
+        self.tilt_degrees = DEFAULT_OVERVIEW_TILT_DEGREES
         self.scale = 1.0
         self.pan = QPointF()
         self.center_height_locked = True
@@ -146,6 +150,8 @@ class CourseCanvas(QWidget):
 
     def set_scene(self, scene: CourseScene, *, reset_view: bool = False) -> None:
         self.scene = scene
+        if reset_view:
+            self._reset_overview_orientation()
         available = {stage.section_id for stage in scene.stages}
         if self.hovered_section_id not in available:
             self.hovered_section_id = None
@@ -160,6 +166,12 @@ class CourseCanvas(QWidget):
             self._needs_fit = True
             self._fit_timer.start(0)
         self.update()
+
+    def _reset_overview_orientation(self) -> None:
+        self.set_follow_live(False)
+        self.yaw_degrees = DEFAULT_OVERVIEW_YAW_DEGREES
+        self.tilt_degrees = DEFAULT_OVERVIEW_TILT_DEGREES
+        self._centered_section_id = None
 
     def set_selected_section(self, section_id: str | None) -> None:
         self.selected_section_id = section_id

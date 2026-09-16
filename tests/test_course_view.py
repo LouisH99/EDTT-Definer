@@ -64,7 +64,7 @@ def live_snapshot(
     )
 
 
-def test_panel_starts_top_down_and_renders_course(qtbot) -> None:
+def test_panel_starts_at_fitted_45_degree_overview_and_renders_course(qtbot) -> None:
     panel = CourseViewPanel()
     panel.resize(850, 600)
     qtbot.addWidget(panel)
@@ -78,12 +78,45 @@ def test_panel_starts_top_down_and_renders_course(qtbot) -> None:
 
     assert panel.canvas.scene.state is SceneState.READY
     assert panel.canvas.yaw_degrees == 0
-    assert panel.canvas.tilt_degrees == 0
+    assert panel.canvas.tilt_degrees == 45
     assert panel.canvas.scale > 0
     assert not image.isNull()
     assert image.width() > 250
     assert "altitude scale 1:1" in panel.status_label.text()
     assert panel.body_selector.count() == 1
+
+
+def test_project_and_body_replacement_restore_default_overview(qtbot) -> None:
+    project = visual_project()
+    remote = project.document.add_waypoint("ShipPass")
+    remote.set_value("System", "Remote System")
+    remote.set_value("Body", "Remote 2")
+    remote.set_value("BodyRadius", "1000")
+    remote.set_value("Position", "1,2")
+    remote.set_value("Proximity", "50")
+    project.stage_metadata[remote.node_id] = StageMetadata(
+        altitude_mode=AltitudeMode.NONE
+    )
+    panel = CourseViewPanel()
+    panel.resize(850, 600)
+    qtbot.addWidget(panel)
+    panel.show()
+    panel.set_project(project)
+    panel.canvas.fit_view()
+
+    panel.canvas.yaw_degrees = 170
+    panel.canvas.tilt_degrees = 225
+    panel.body_selector.setCurrentIndex(1)
+    qtbot.wait(20)
+    assert panel.canvas.yaw_degrees == 0
+    assert panel.canvas.tilt_degrees == 45
+
+    panel.canvas.yaw_degrees = 200
+    panel.canvas.tilt_degrees = 315
+    panel.set_project(visual_project())
+    qtbot.wait(20)
+    assert panel.canvas.yaw_degrees == 0
+    assert panel.canvas.tilt_degrees == 45
 
 
 def test_click_hover_and_camera_controls(qtbot) -> None:

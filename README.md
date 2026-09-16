@@ -2,7 +2,7 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.6.5**.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.6.6**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
@@ -18,7 +18,7 @@ EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot t
 
 ### Prebuilt Windows release
 
-Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.6.5.exe` from its **Assets** section, and run it. No installation is required.
+Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.6.6.exe` from its **Assets** section, and run it. No installation is required.
 
 The executable is not code-signed, so Windows SmartScreen may show its normal warning on first launch.
 
@@ -100,13 +100,13 @@ Speed is derived from great-circle surface distance, altitude change, and elapse
 
 Courses are grouped by normalized System and Body. Use the **Body** selector when a definition spans more than one body; choosing a section in the editor automatically selects its body. The visualizer uses the first valid project `BodyRadius` in route order, followed by matching live or locally cached data. Conflicting project radii produce a warning. Without an accurate radius, the view waits instead of inventing a planetary scale.
 
-The default view looks straight down with North up and East right. Enable **Follow ship** to keep the matching live position centered at a 45-degree tilt; the camera rotates with live heading so the vehicle initially points toward the top of the view. Click **Follow ship** again to rotate the following camera another 90 degrees around the vehicle, cycling through side, rear, and opposite-side views. Follow mode waits safely if matching coordinates are temporarily unavailable. Zoom remains available while following, while manual orbit, pan, **Top**, or **Fit** turns following off.
+The default view is automatically fitted and looks down at the course from a 45-degree angle, with North toward the top and East to the right. This deterministic overview is restored when a project is opened or a different body is selected. Enable **Follow ship** to keep the matching live position centered at the same 45-degree tilt; the camera rotates with live heading so the vehicle initially points toward the top of the view. Click **Follow ship** again to rotate the following camera another 90 degrees around the vehicle, cycling through side, rear, and opposite-side views. Follow mode waits safely if matching coordinates are temporarily unavailable. Zoom remains available while following, while manual orbit, pan, **Top**, or **Fit** turns following off.
 
-Drag with the left mouse button to orbit freely through 360 degrees around either axis, drag with the right or middle button to pan, and use the mouse wheel to zoom. Double-click Start, a waypoint, or End to select it and center the camera on that checkpoint. **Lock center at 0 m** is enabled by default and places the orbit pivot on the ground directly below the selected checkpoint; disable it to pivot at the checkpoint's actual altitude. **Top** restores the straight-down overview, while **Fit** frames all visible route geometry. The distance scale and altitude geometry use the same physical metre scale without vertical exaggeration.
+Drag with the left mouse button to orbit freely through 360 degrees around either axis, drag with the right or middle button to pan, and use the mouse wheel to zoom. Double-click Start, a waypoint, or End to select it and center the camera on that checkpoint. **Lock center at 0 m** is enabled by default and places the orbit pivot on the ground directly below the selected checkpoint; disable it to pivot at the checkpoint's actual altitude. **Top** restores the fitted straight-down overview, while **Fit** frames all visible route geometry without changing the current angle. The distance scale and altitude geometry use the same physical metre scale without vertical exaggeration.
 
 Choose **Pop out** to move the same live panel into a separate, resizable, non-modal window. **Dock back**, the tab placeholder, or closing the separate window returns it to the main editor. Camera movement, body selection, and docking never modify the course or mark it as changed.
 
-For a manually captured gate, choose **Gate** in the position editor and capture endpoint A and endpoint B separately. Once both endpoints and the body radius are present, the editor displays their great-circle surface distance in metres or kilometres. This measurement is informational and is not added to the EDCoPilot TXT. Altitude is locked against live capture by default, so capturing point B does not replace the rule chosen at point A. Unlock it when live altitude should update a target; the app intentionally does not invent an altitude tolerance.
+For a manually captured gate, choose **Gate** in the position editor and capture endpoint A and endpoint B separately, in either order. A B-first capture is retained as incomplete project data, but EDCoPilot export remains blocked until A is also present. Once both endpoints and the body radius are present, the editor displays their great-circle surface distance in metres or kilometres. This measurement is informational and is not added to the EDCoPilot TXT. Altitude is locked against live capture by default, so capturing either endpoint does not replace the chosen rule. Unlock it when live altitude should update a target; the app intentionally does not invent an altitude tolerance.
 
 ### Convert a gate to its center point
 
@@ -154,7 +154,7 @@ Elite Dangerous journal `Scan` events contain a body's radius in metres. EDTT De
 
 If no local radius is available, **Find radius** can use the public [EDSM](https://www.edsm.net/) system-bodies API. The first lookup asks whether to allow it once, always allow it, or not use it at that time. An allowed lookup sends the system name to `edsm.net` over HTTPS; the current body is matched locally in the returned body list. EDSM responses are cached and marked as **EDSM** or **EDSM cache**. Use **Help → Reset EDSM radius permission** to make the application ask again.
 
-Start, waypoint, and end forms also expose the instruction and timing fields found in EDCoPilot examples, including `EnterSystemInstruction`, `ApproachBodyInstruction`, `LastLegMessage`, `EndInstruction`, and the `MaxSpeed*` settings. The End section uses `EndInstruction`; `NextInstruction` is only used by Start and Waypoint sections.
+Start, waypoint, and end forms also expose the instruction and timing fields found in EDCoPilot examples, including `EnterSystemInstruction`, `ApproachBodyInstruction`, `LastLegMessage`, `EndInstruction`, and the `MaxSpeed*` settings. Repeated instructions use one large free-form editor: each non-empty line becomes a separate instruction entry, and a line can begin with `Terse:` for EDCoPilot's shorter speech mode. **Insert Terse:** prefixes the current line or every selected non-empty line and leaves already-prefixed lines unchanged. The End section uses `EndInstruction`; `NextInstruction` is only used by Start and Waypoint sections.
 
 ## Game data
 
@@ -166,7 +166,7 @@ The normal journal location is detected automatically:
 
 Use **Journal folder…** in the live-location pane if the folder has been redirected. A stale status or “no planetary coordinates” message is normal when the game is closed, at the main menu, or away from a planetary surface.
 
-The application watches `Status.json` and reads it only at startup or when Windows reports a file change. Because Elite replaces the file during updates, EDTT Definer also watches the containing directory and automatically attaches to each replacement. It watches the newest `Journal.*.log` for current system, station, body identifiers, locally available scan radii, and journal rotation. Change bursts are briefly debounced; files are read locally and never modified.
+The application watches `Status.json` and reads it only at startup or when Windows reports a file change. Because Elite replaces the file during updates, EDTT Definer also watches the containing directory and automatically attaches to each replacement. Freshness is based on actual file changes rather than the embedded game timestamp, which can lag behind the PC clock. It watches the newest `Journal.*.log` for current system, station, body identifiers, locally available scan radii, and journal rotation. Change bursts are briefly debounced; files are read locally and never modified.
 
 ## Development
 

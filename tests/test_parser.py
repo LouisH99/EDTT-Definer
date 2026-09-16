@@ -235,6 +235,24 @@ def test_position_point_and_gate_preserve_decimal_text() -> None:
     assert gate.is_gate
 
 
+def test_position_preserves_gate_endpoint_b_before_a() -> None:
+    position = Position(
+        latitude_b="-12.350000",
+        longitude_b="56.790000",
+        gate=True,
+    )
+
+    serialized = position.format()
+    restored = Position.parse(serialized)
+
+    assert serialized == ", to -12.350000,56.790000"
+    assert restored.is_gate
+    assert restored.latitude_a == ""
+    assert restored.longitude_a == ""
+    assert restored.latitude_b == "-12.350000"
+    assert restored.longitude_b == "56.790000"
+
+
 def test_waypoint_operations_keep_complete_blocks() -> None:
     document = parse_text(SAMPLE)
     first = document.waypoints[0].section

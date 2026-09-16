@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased
+## v0.6.6 — 2026-09-16
 
 - Fix live coordinates and race-line recording being incorrectly marked stale when Elite's embedded `Status.json` timestamp lags behind the PC clock while the file is still updating.
+- Replace the repeated-instruction list controls with one free-form multiline editor where each non-empty line becomes an EDCoPilot instruction and `Terse:` can be typed directly.
+- Add an **Insert Terse:** helper beside every instruction editor for prefixing the current line or all selected lines without duplicating existing prefixes.
+- Allow gate endpoint B to be captured before endpoint A while continuing to block export until the gate is complete.
+- Start and reset the 3D course overview at a fitted 45-degree angle from above, with North toward the top and East to the right; **Top** remains the straight-down view.
 
 ## v0.6.5 — 2026-09-14
 

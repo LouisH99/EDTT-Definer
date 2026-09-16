@@ -74,7 +74,10 @@ HELP_TEXT = {
     "latitude_b": "Purpose: latitude of gate endpoint B, from -90 through 90 degrees.",
     "longitude_b": "Purpose: longitude of gate endpoint B, from -180 through 180 degrees.",
     "capture_a": "Purpose: copy the current live latitude and longitude into point/gate endpoint A.",
-    "capture_b": "Purpose: copy the current live latitude and longitude into gate endpoint B without changing A.",
+    "capture_b": (
+        "Purpose: copy the current live latitude and longitude into gate endpoint B without changing A. "
+        "B may be captured before A; export remains blocked until both endpoints are complete."
+    ),
     "gate_width": (
         "Purpose: total width in metres for a calculated gate. Half is placed on each side of the heading. "
         "Example: 2000 creates a 2 km gate."
@@ -113,8 +116,16 @@ HELP_TEXT = {
     "enter_system": "Purpose: optional instruction spoken when the commander enters this stage's system.",
     "approach_body": "Purpose: optional instruction spoken while approaching this stage's body.",
     "last_leg": "Purpose: optional message for the final leg before the End checkpoint.",
-    "instructions": "Purpose: repeated spoken EDCoPilot instructions. Select a row to edit it; use Terse for the short-speech variant.",
-    "terse": "Purpose: prefixes the instruction with Terse: for EDCoPilot's shorter speech mode.",
+    "instructions": (
+        "Purpose: spoken EDCoPilot instructions. Enter one instruction per line; each non-empty line becomes a "
+        "repeated instruction field in the exported TXT. Prefix any line with Terse: to request EDCoPilot's "
+        "shorter speech mode. Example: Terse:Turn left at the next gate."
+    ),
+    "terse": (
+        "Prefix the current non-empty line, or every selected non-empty line, with Terse: for "
+        "EDCoPilot's shorter speech mode. On an empty line, insert Terse: ready for typing. "
+        "Lines that already have the prefix are left unchanged."
+    ),
     "max_speed": "Purpose: optional maximum permitted speed for this stage. Enter a positive numeric value.",
     "max_speed_distance": "Purpose: warning distance before the stage; one number or comma-separated values such as 1000,500.",
     "max_speed_trigger": "Purpose: optional warning speed thresholds paired with warning distances, for example 300,250.",

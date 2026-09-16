@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 from PySide6.QtCore import QEvent, QObject, QSettings, Qt, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -61,7 +61,7 @@ class FakeUpdateClient(QObject):
 
 
 def test_patch_release_version_is_visible() -> None:
-    assert APP_DISPLAY_NAME == "EDTT Definer v0.6.5"
+    assert APP_DISPLAY_NAME == "EDTT Definer v0.6.6"
 
 
 def test_new_course_uses_authoring_defaults(qtbot) -> None:
@@ -777,6 +777,48 @@ def test_gate_endpoint_capture(qtbot) -> None:
     window.dirty = False
 
 
+def test_gate_endpoint_b_can_be_captured_before_a(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window.live_result = LiveResult(
+        LiveState.LIVE,
+        LocationSnapshot(
+            latitude=Decimal("10.1"),
+            longitude=Decimal("20.2"),
+            flags=1 << 21,
+            flag_has_lat_long=True,
+        ),
+        "ready",
+    )
+    waypoint = window.project.document.waypoints[0].section
+    window.current_section_id = waypoint.node_id
+    window.stage_form.position_mode.setCurrentText("Gate")
+
+    window.capture_selected("b")
+
+    assert waypoint.value("Position") == ", to 10.1,20.2"
+    assert window.stage_form.lat_a.text() == ""
+    assert window.stage_form.lon_a.text() == ""
+    assert window.stage_form.lat_b.text() == "10.1"
+    assert window.stage_form.lon_b.text() == "20.2"
+    assert any(
+        issue.section_id == waypoint.node_id and issue.field == "Position"
+        for issue in window.validation_issues
+    )
+
+    window.live_result.snapshot.latitude = Decimal("10.2")
+    window.live_result.snapshot.longitude = Decimal("20.3")
+    window.capture_selected("a")
+
+    assert waypoint.value("Position") == "10.2,20.3 to 10.1,20.2"
+    assert not any(
+        issue.section_id == waypoint.node_id and issue.field == "Position"
+        for issue in window.validation_issues
+    )
+    window.dirty = False
+
+
 def test_create_gate_from_live_heading(qtbot) -> None:
     window = MainWindow()
     window.poll_timer.stop()
@@ -1105,6 +1147,80 @@ def test_end_editor_writes_end_instruction_and_extra_stage_fields(qtbot) -> None
     assert end.value("MaxSpeed") == "100"
     assert end.value("MaxSpeedWarningDistance") == "500,250"
     assert end.value("MaxSpeedWarningInstruction") == "Slow down"
+    window.dirty = False
+
+
+def test_instruction_editor_is_one_free_form_multiline_box(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    waypoint = window.project.document.waypoints[0].section
+
+    window._show_section(waypoint.node_id)
+    editor = window.stage_form.next_instructions
+
+    assert editor.layout().count() == 2
+    assert (
+        editor.layout().itemAt(0).layout().itemAt(0).widget()
+        is editor.terse_button
+    )
+    assert editor.layout().itemAt(1).widget() is editor.edit
+    assert editor.terse_button.text() == "Insert Terse:"
+    assert editor.edit.toPlainText() == "Terse:Turn left."
+
+    editor.edit.setPlainText(
+        "Climb above the ridge.\n\nTerse:Turn right at the next gate."
+    )
+
+    assert waypoint.values("NextInstruction") == [
+        "Climb above the ridge.",
+        "Terse:Turn right at the next gate.",
+    ]
+    assert "NextInstruction=Climb above the ridge." in window.preview.toPlainText()
+    assert (
+        "NextInstruction=Terse:Turn right at the next gate."
+        in window.preview.toPlainText()
+    )
+    window.dirty = False
+
+
+def test_instruction_editor_terse_button_handles_line_selection_and_empty_text(
+    qtbot,
+) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    waypoint = window.project.document.waypoints[0].section
+    window._show_section(waypoint.node_id)
+    editor = window.stage_form.next_instructions
+
+    editor.edit.setPlainText("First instruction\nSecond instruction\nTerse:Already short")
+    cursor = editor.edit.textCursor()
+    cursor.setPosition(editor.edit.toPlainText().index("Second") + 3)
+    editor.edit.setTextCursor(cursor)
+    qtbot.mouseClick(editor.terse_button, Qt.MouseButton.LeftButton)
+    assert editor.edit.toPlainText() == (
+        "First instruction\nTerse:Second instruction\nTerse:Already short"
+    )
+
+    cursor = editor.edit.textCursor()
+    cursor.select(QTextCursor.SelectionType.Document)
+    editor.edit.setTextCursor(cursor)
+    qtbot.mouseClick(editor.terse_button, Qt.MouseButton.LeftButton)
+    assert editor.edit.toPlainText() == (
+        "Terse:First instruction\nTerse:Second instruction\nTerse:Already short"
+    )
+    assert waypoint.values("NextInstruction") == [
+        "Terse:First instruction",
+        "Terse:Second instruction",
+        "Terse:Already short",
+    ]
+
+    editor.edit.clear()
+    qtbot.mouseClick(editor.terse_button, Qt.MouseButton.LeftButton)
+    assert editor.edit.toPlainText() == "Terse:"
     window.dirty = False
 
 

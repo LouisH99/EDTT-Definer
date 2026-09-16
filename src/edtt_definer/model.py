@@ -207,11 +207,11 @@ class Position:
         )
 
     def format(self) -> str:
-        if not self.latitude_a and not self.longitude_a:
-            return ""
         point_a = f"{self.latitude_a},{self.longitude_a}"
         if self.is_gate:
             return f"{point_a} to {self.latitude_b},{self.longitude_b}"
+        if not self.latitude_a and not self.longitude_a:
+            return ""
         return point_a
 
     @classmethod
