@@ -2,7 +2,7 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.6.6**.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.6.7**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
@@ -18,7 +18,7 @@ EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot t
 
 ### Prebuilt Windows release
 
-Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.6.6.exe` from its **Assets** section, and run it. No installation is required.
+Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.6.7.exe` from its **Assets** section, and run it. No installation is required.
 
 The executable is not code-signed, so Windows SmartScreen may show its normal warning on first launch.
 
@@ -102,7 +102,7 @@ Courses are grouped by normalized System and Body. Use the **Body** selector whe
 
 The default view is automatically fitted and looks down at the course from a 45-degree angle, with North toward the top and East to the right. This deterministic overview is restored when a project is opened or a different body is selected. Enable **Follow ship** to keep the matching live position centered at the same 45-degree tilt; the camera rotates with live heading so the vehicle initially points toward the top of the view. Click **Follow ship** again to rotate the following camera another 90 degrees around the vehicle, cycling through side, rear, and opposite-side views. Follow mode waits safely if matching coordinates are temporarily unavailable. Zoom remains available while following, while manual orbit, pan, **Top**, or **Fit** turns following off.
 
-Drag with the left mouse button to orbit freely through 360 degrees around either axis, drag with the right or middle button to pan, and use the mouse wheel to zoom. Double-click Start, a waypoint, or End to select it and center the camera on that checkpoint. **Lock center at 0 m** is enabled by default and places the orbit pivot on the ground directly below the selected checkpoint; disable it to pivot at the checkpoint's actual altitude. **Top** restores the fitted straight-down overview, while **Fit** frames all visible route geometry without changing the current angle. The distance scale and altitude geometry use the same physical metre scale without vertical exaggeration.
+Drag with the left mouse button to orbit freely through 360 degrees around either axis, drag with the right or middle button to pan, and use the mouse wheel to zoom. Altitude remains visually upright through the complete orbit, so climbing always moves upward without changing forward, yaw, strafe, or ground-plane movement. Double-click Start, a waypoint, or End to select it and center the camera on that checkpoint. **Lock center at 0 m** is enabled by default and places the orbit pivot on the ground directly below the selected checkpoint; disable it to pivot at the checkpoint's actual altitude. **Top** restores the fitted straight-down overview, while **Fit** frames all visible route geometry without changing the current angle. The distance scale and altitude geometry use the same physical metre scale without vertical exaggeration.
 
 Choose **Pop out** to move the same live panel into a separate, resizable, non-modal window. **Dock back**, the tab placeholder, or closing the separate window returns it to the main editor. Camera movement, body selection, and docking never modify the course or mark it as changed.
 

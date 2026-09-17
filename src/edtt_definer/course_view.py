@@ -331,13 +331,18 @@ class CourseCanvas(QWidget):
     def _camera_coordinates(self, point: Point3D) -> tuple[float, float, float]:
         yaw = math.radians(self.yaw_degrees)
         tilt = math.radians(self.tilt_degrees)
+        tilt_sine = abs(math.sin(tilt))
+        tilt_cosine = math.cos(tilt)
         east = point.east_m - self.camera_target.east_m
         north_offset = point.north_m - self.camera_target.north_m
         altitude = point.altitude_m - self.camera_target.altitude_m
         x = math.cos(yaw) * east - math.sin(yaw) * north_offset
         north = math.sin(yaw) * east + math.cos(yaw) * north_offset
-        y = -north * math.cos(tilt) - altitude * math.sin(tilt)
-        depth = north * math.sin(tilt) - altitude * math.cos(tilt)
+        # Mirror the below-surface half of a full vertical orbit across the
+        # ground plane. Horizontal movement remains unchanged, while positive
+        # altitude always rises on screen instead of flipping after 180°.
+        y = -north * tilt_cosine - altitude * tilt_sine
+        depth = north * tilt_sine - altitude * tilt_cosine
         return x, y, depth
 
     def world_to_screen(self, point: Point3D) -> QPointF:

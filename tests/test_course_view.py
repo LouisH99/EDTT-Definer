@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import math
 from decimal import Decimal
 
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt
 from PySide6.QtGui import QCloseEvent, QMouseEvent
 
-from edtt_definer.course_scene import SceneState
+from edtt_definer.course_scene import Point3D, SceneState, project_coordinate
 from edtt_definer.course_view import CourseViewPanel
 from edtt_definer.live import LiveResult, LiveState, LocationSnapshot
 from edtt_definer.project import AltitudeMode, ProjectData, StageMetadata
@@ -186,6 +187,36 @@ def test_manual_orbit_wraps_freely_through_full_vertical_axis(qtbot) -> None:
 
     panel.canvas.orbit_by(0, -40)
     assert panel.canvas.tilt_degrees == pytest.approx(340)
+
+
+@pytest.mark.parametrize("tilt_degrees", [45, 135, 225, 315])
+def test_altitude_projects_up_through_the_full_vertical_orbit(
+    qtbot, tilt_degrees: float
+) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    panel.canvas.yaw_degrees = 0
+    panel.canvas.tilt_degrees = tilt_degrees
+    panel.canvas.camera_target = Point3D(0, 0, 0)
+    surface = project_coordinate(
+        "44.353741",
+        "112.001579",
+        "44.327717",
+        "111.931267",
+        "1297.896750",
+        0,
+    )
+    low = Point3D(surface.east_m, surface.north_m, 76)
+    high = Point3D(surface.east_m, surface.north_m, 506)
+
+    low_x, low_y, _low_depth = panel.canvas._camera_coordinates(low)
+    high_x, high_y, _high_depth = panel.canvas._camera_coordinates(high)
+
+    assert high_x == pytest.approx(low_x)
+    assert high_y < low_y
+    expected_surface_y = -surface.north_m * math.cos(math.radians(tilt_degrees))
+    _surface_x, surface_y, _surface_depth = panel.canvas._camera_coordinates(surface)
+    assert surface_y == pytest.approx(expected_surface_y)
 
 
 def test_center_height_lock_defaults_to_ground_and_double_click_centers_stage(

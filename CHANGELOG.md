@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.7 — 2026-09-17
+
+- Keep altitude visually upright throughout unrestricted 360-degree camera rotation without changing forward, yaw, strafe, or ground-plane movement.
+
 ## v0.6.6 — 2026-09-16
 
 - Fix live coordinates and race-line recording being incorrectly marked stale when Elite's embedded `Status.json` timestamp lags behind the PC clock while the file is still updating.
