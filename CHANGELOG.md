@@ -1,8 +1,14 @@
 # Changelog
 
-## v0.6.7 — 2026-09-17
+## v0.6.7 — 2026-09-18
 
-- Keep altitude visually upright throughout unrestricted 360-degree camera rotation without changing forward, yaw, strafe, or ground-plane movement.
+- Replace the two-angle course camera with a world-up turntable orientation so normal orbiting keeps positive altitude above ground from either side and from below the surface, stopping at the vertical poles instead of flipping the scene.
+- Separate intentional camera roll from normal orbiting: use **Shift + left-drag** for continuous roll, **R** to restore upright roll, or **Shift + R** to turn the view 180 degrees.
+- Preserve the horizontal mouse-orbit direction used by EDTT Definer v0.6.6.
+- Make **Lock center at 0 m** a world-space ground-plane constraint: pan moves the pivot across the surface while its altitude remains exactly zero, including after roll, zoom, non-renderable scenes, and all camera controls. Ground-pan sensitivity now decreases toward a horizontal side view instead of producing large distance jumps.
+- Keep showing the session's last known valid live marker through stale, missing, or partially written `Status.json` states. Capture and race-line recording still stop after the normal 15-second freshness limit, and authoritative no-coordinate data clears the marker.
+- Allow valid Start-to-End races with no intermediate waypoints. New races still begin with Waypoint 1, which may now be deleted.
+- Keep **Follow ship** active while left-dragging to adjust its heading-relative yaw, tilt, or intentional roll; right- or middle-drag panning still releases follow mode.
 
 ## v0.6.6 — 2026-09-16
 

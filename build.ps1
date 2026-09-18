@@ -5,6 +5,9 @@ param(
 $ErrorActionPreference = "Stop"
 $Python = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $Python)) {
+    $Python = Join-Path (Split-Path $PSScriptRoot -Parent) "venv\Scripts\python.exe"
+}
+if (-not (Test-Path -LiteralPath $Python)) {
     $Python = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "venv\Scripts\python.exe"
 }
 if (-not (Test-Path -LiteralPath $Python)) {

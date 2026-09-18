@@ -71,6 +71,7 @@ def test_new_course_uses_authoring_defaults(qtbot) -> None:
 
     assert window.project.document.event_info.get("MaxShipSize") == "N/A"
     assert window.event_form.max_ship_size.currentText() == "N/A"
+    assert len(window.project.document.waypoints) == 1
 
     waypoint = window.project.document.waypoints[0].section
     window.refresh_navigation(waypoint.node_id)
@@ -179,6 +180,34 @@ def test_add_duplicate_move_and_delete_waypoints(qtbot) -> None:
     window.move_waypoint(-1)
     window.delete_waypoint()
     assert len(window.project.document.waypoints) == original_count + 1
+    window.dirty = False
+
+
+def test_final_waypoint_can_be_deleted_and_added_again(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    project = ProjectData(document=parse_text(SAMPLE))
+    waypoint = project.document.waypoints[0].section
+    project.stage_metadata[waypoint.node_id] = StageMetadata(display_name="Only gate")
+    project.capture_metadata[waypoint.node_id] = {"heading": "90"}
+    window._set_project(project, None, dirty=False)
+    window.refresh_navigation(waypoint.node_id)
+
+    window.delete_waypoint()
+
+    assert not window.project.document.waypoints
+    assert waypoint.node_id not in window.project.stage_metadata
+    assert waypoint.node_id not in window.project.capture_metadata
+    assert window.project.document.end is not None
+    assert window.current_section_id == window.project.document.end.section.node_id
+    assert window.navigation.currentItem().text() == "End"
+    assert "[waypoint]" not in window.preview.toPlainText().lower()
+
+    added = window.add_waypoint()
+    assert len(window.project.document.waypoints) == 1
+    assert window.project.document.waypoints[0].section is added
+    assert window.navigation.currentItem().text() == "Waypoint 1"
     window.dirty = False
 
 
@@ -655,6 +684,38 @@ def test_capture_selected_and_capture_add(qtbot) -> None:
     assert len(window.project.document.waypoints) == before + 1
     assert window.project.document.waypoints[-1].get("Position") == "1.234567,2.345678"
     window.dirty = False
+
+
+def test_stale_last_known_marker_cannot_be_captured(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    window.live_stale_timer.stop()
+    qtbot.addWidget(window)
+    waypoint = window.project.document.waypoints[0].section
+    waypoint.set_value("BodyRadius", "6371")
+    window.refresh_navigation(waypoint.node_id)
+    snapshot = LocationSnapshot(
+        system="Sol",
+        body="Earth",
+        latitude=Decimal("12.3"),
+        longitude=Decimal("45.6"),
+        flags=1 << 21,
+        flag_has_lat_long=True,
+    )
+    window._display_live_result(LiveResult(LiveState.LIVE, snapshot, "Live"))
+    window._mark_live_stale()
+    original_position = waypoint.value("Position")
+
+    assert window.live_result.state is LiveState.STALE
+    assert not window.capture_button.isEnabled()
+    assert not window.capture_add_button.isEnabled()
+    assert not window.stage_form.capture_a_button.isEnabled()
+    assert not window.stage_form.capture_b_button.isEnabled()
+
+    window.capture_selected(None)
+    window.capture_selected("a")
+    window.capture_selected("b")
+    assert waypoint.value("Position") == original_position
 
 
 def test_default_altitude_lock_protects_all_capture_paths(qtbot) -> None:

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .camera import CameraOrientation
 from .course_scene import (
     BodyGroup,
     BodyKey,
@@ -115,14 +116,21 @@ class CourseCanvas(QWidget):
     stage_selected = Signal(str)
     hovered_stage_changed = Signal(object)
     follow_live_changed = Signal(bool)
+    follow_view_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.scene = build_course_scene(ProjectData.new())
         self.selected_section_id: str | None = None
         self.hovered_section_id: str | None = None
-        self.yaw_degrees = DEFAULT_OVERVIEW_YAW_DEGREES
-        self.tilt_degrees = DEFAULT_OVERVIEW_TILT_DEGREES
+        self._yaw_degrees = DEFAULT_OVERVIEW_YAW_DEGREES
+        self._tilt_degrees = DEFAULT_OVERVIEW_TILT_DEGREES
+        self._roll_degrees = 0.0
+        self.camera_orientation = CameraOrientation.from_turntable(
+            self._yaw_degrees,
+            self._tilt_degrees,
+            self._roll_degrees,
+        )
         self.scale = 1.0
         self.pan = QPointF()
         self.center_height_locked = True
@@ -130,6 +138,7 @@ class CourseCanvas(QWidget):
         self._centered_section_id: str | None = None
         self.follow_live = False
         self.follow_yaw_offset_degrees = 0.0
+        self.follow_tilt_degrees = DEFAULT_OVERVIEW_TILT_DEGREES
         self._follow_initialized = False
         self._needs_fit = True
         self._press_position: QPointF | None = None
@@ -150,6 +159,7 @@ class CourseCanvas(QWidget):
 
     def set_scene(self, scene: CourseScene, *, reset_view: bool = False) -> None:
         self.scene = scene
+        self._enforce_center_height_lock()
         if reset_view:
             self._reset_overview_orientation()
         available = {stage.section_id for stage in scene.stages}
@@ -169,9 +179,52 @@ class CourseCanvas(QWidget):
 
     def _reset_overview_orientation(self) -> None:
         self.set_follow_live(False)
-        self.yaw_degrees = DEFAULT_OVERVIEW_YAW_DEGREES
-        self.tilt_degrees = DEFAULT_OVERVIEW_TILT_DEGREES
+        self._set_camera_angles(
+            DEFAULT_OVERVIEW_YAW_DEGREES,
+            DEFAULT_OVERVIEW_TILT_DEGREES,
+            reset_roll=True,
+        )
         self._centered_section_id = None
+
+    @property
+    def yaw_degrees(self) -> float:
+        return self._yaw_degrees
+
+    @yaw_degrees.setter
+    def yaw_degrees(self, value: float) -> None:
+        self._set_camera_angles(value, self._tilt_degrees)
+
+    @property
+    def tilt_degrees(self) -> float:
+        return self._tilt_degrees
+
+    @tilt_degrees.setter
+    def tilt_degrees(self, value: float) -> None:
+        self._set_camera_angles(self._yaw_degrees, value)
+
+    @property
+    def roll_degrees(self) -> float:
+        return self._roll_degrees
+
+    def _set_camera_angles(
+        self,
+        yaw_degrees: float,
+        tilt_degrees: float,
+        *,
+        reset_roll: bool = False,
+    ) -> None:
+        self._yaw_degrees = yaw_degrees % 360.0
+        self._tilt_degrees = max(0.0, min(180.0, float(tilt_degrees)))
+        if reset_roll:
+            self._roll_degrees = 0.0
+        self._rebuild_camera_orientation()
+
+    def _rebuild_camera_orientation(self) -> None:
+        self.camera_orientation = CameraOrientation.from_turntable(
+            self._yaw_degrees,
+            self._tilt_degrees,
+            self._roll_degrees,
+        )
 
     def set_selected_section(self, section_id: str | None) -> None:
         self.selected_section_id = section_id
@@ -185,6 +238,9 @@ class CourseCanvas(QWidget):
         self._follow_initialized = False
         if enabled:
             self.follow_yaw_offset_degrees = 0.0
+            self.follow_tilt_degrees = DEFAULT_OVERVIEW_TILT_DEGREES
+            self._roll_degrees = 0.0
+            self._rebuild_camera_orientation()
             self._fit_timer.stop()
             self._apply_live_follow(initialize=True)
         self.follow_live_changed.emit(enabled)
@@ -204,13 +260,10 @@ class CourseCanvas(QWidget):
         marker = self.scene.live_marker
         if self.scene.state is not SceneState.READY or marker is None:
             return False
-        self.tilt_degrees = 45.0
-        if marker.heading_degrees is not None:
-            self.yaw_degrees = (
-                marker.heading_degrees + self.follow_yaw_offset_degrees
-            ) % 360.0
-        elif initialize:
-            self.yaw_degrees = self.follow_yaw_offset_degrees
+        follow_yaw = (
+            (marker.heading_degrees or 0.0) + self.follow_yaw_offset_degrees
+        ) % 360.0
+        self._set_camera_angles(follow_yaw, self.follow_tilt_degrees)
         if initialize:
             self.fit_view()
             self._follow_initialized = True
@@ -220,16 +273,18 @@ class CourseCanvas(QWidget):
             marker.position.north_m,
             0.0 if self.center_height_locked else marker.position.altitude_m,
         )
-        x, y, _depth = self._camera_coordinates(marker.position)
-        self.pan = QPointF(-x * self.scale, -y * self.scale)
+        if self.center_height_locked:
+            self.pan = QPointF()
+        else:
+            x, y, _depth = self._camera_coordinates(marker.position)
+            self.pan = QPointF(-x * self.scale, -y * self.scale)
         self._needs_fit = False
         self.update()
         return True
 
     def top_view(self) -> None:
         self.set_follow_live(False)
-        self.yaw_degrees = 0.0
-        self.tilt_degrees = 0.0
+        self._set_camera_angles(0.0, 0.0, reset_roll=True)
         self.fit_view()
 
     def fit_view(self) -> None:
@@ -270,14 +325,32 @@ class CourseCanvas(QWidget):
         max_y = max(point[1] for point in projected)
         span_x = max(max_x - min_x, 1.0)
         span_y = max(max_y - min_y, 1.0)
+        vertical_span = (
+            2.0 * max(abs(min_y), abs(max_y), 0.5)
+            if self.center_height_locked
+            else span_y
+        )
         self.scale = max(
             1e-7,
-            min(1e4, min((self.width() - 70) / span_x, (self.height() - 70) / span_y)),
+            min(
+                1e4,
+                min(
+                    (self.width() - 70) / span_x,
+                    (self.height() - 70) / vertical_span,
+                ),
+            ),
         )
-        self.pan = QPointF(
-            -((min_x + max_x) / 2.0) * self.scale,
-            -((min_y + max_y) / 2.0) * self.scale,
-        )
+        horizontal_offset = -((min_x + max_x) / 2.0) * self.scale
+        if self.center_height_locked:
+            self.pan = QPointF()
+            self._move_ground_target_for_screen_delta(
+                QPointF(horizontal_offset, 0.0)
+            )
+        else:
+            self.pan = QPointF(
+                horizontal_offset,
+                -((min_y + max_y) / 2.0) * self.scale,
+            )
         self._needs_fit = False
         if self.follow_live:
             self._apply_live_follow(initialize=False)
@@ -329,21 +402,10 @@ class CourseCanvas(QWidget):
         return points
 
     def _camera_coordinates(self, point: Point3D) -> tuple[float, float, float]:
-        yaw = math.radians(self.yaw_degrees)
-        tilt = math.radians(self.tilt_degrees)
-        tilt_sine = abs(math.sin(tilt))
-        tilt_cosine = math.cos(tilt)
         east = point.east_m - self.camera_target.east_m
         north_offset = point.north_m - self.camera_target.north_m
         altitude = point.altitude_m - self.camera_target.altitude_m
-        x = math.cos(yaw) * east - math.sin(yaw) * north_offset
-        north = math.sin(yaw) * east + math.cos(yaw) * north_offset
-        # Mirror the below-surface half of a full vertical orbit across the
-        # ground plane. Horizontal movement remains unchanged, while positive
-        # altitude always rises on screen instead of flipping after 180°.
-        y = -north * tilt_cosine - altitude * tilt_sine
-        depth = north * tilt_sine - altitude * tilt_cosine
-        return x, y, depth
+        return self.camera_orientation.project(east, north_offset, altitude)
 
     def world_to_screen(self, point: Point3D) -> QPointF:
         x, y, _depth = self._camera_coordinates(point)
@@ -353,18 +415,122 @@ class CourseCanvas(QWidget):
         )
 
     def orbit_by(self, horizontal_degrees: float, vertical_degrees: float) -> None:
-        """Rotate freely around both axes, wrapping smoothly through 360°."""
+        """Orbit upright around the target without crossing a vertical pole."""
         self.set_follow_live(False)
-        self.yaw_degrees = (self.yaw_degrees + horizontal_degrees) % 360.0
-        self.tilt_degrees = (self.tilt_degrees + vertical_degrees) % 360.0
+        self._yaw_degrees = (self._yaw_degrees + horizontal_degrees) % 360.0
+        self._tilt_degrees = max(
+            0.0,
+            min(180.0, self._tilt_degrees + vertical_degrees),
+        )
+        self._rebuild_camera_orientation()
+        self._enforce_center_height_lock()
+        self._needs_fit = False
+        self.update()
+
+    def orbit_follow_by(
+        self, horizontal_degrees: float, vertical_degrees: float
+    ) -> None:
+        """Adjust the heading-relative follow view without releasing its target."""
+        if not self.follow_live:
+            self.orbit_by(horizontal_degrees, vertical_degrees)
+            return
+        self.follow_yaw_offset_degrees = (
+            self.follow_yaw_offset_degrees + horizontal_degrees
+        ) % 360.0
+        self.follow_tilt_degrees = max(
+            0.0,
+            min(180.0, self.follow_tilt_degrees + vertical_degrees),
+        )
+        if not self._apply_live_follow(initialize=False):
+            self._set_camera_angles(
+                self._yaw_degrees + horizontal_degrees,
+                self.follow_tilt_degrees,
+            )
+            self._needs_fit = False
+            self.update()
+        self.follow_view_changed.emit()
+
+    def set_roll(self, degrees: float) -> None:
+        """Set an intentional camera roll without changing the viewing direction."""
+        self.set_follow_live(False)
+        self._roll_degrees = degrees % 360.0
+        self._rebuild_camera_orientation()
+        self._enforce_center_height_lock()
+        self._needs_fit = False
+        self.update()
+        self.follow_view_changed.emit()
+
+    def roll_by(self, degrees: float) -> None:
+        """Roll intentionally without changing the orbital viewing direction."""
+        self.set_roll(self._roll_degrees + degrees)
+
+    def roll_follow_by(self, degrees: float) -> None:
+        """Roll the follow view while keeping live tracking active."""
+        if not self.follow_live:
+            self.roll_by(degrees)
+            return
+        self._roll_degrees = (self._roll_degrees + degrees) % 360.0
+        self._rebuild_camera_orientation()
+        self._enforce_center_height_lock()
+        self._needs_fit = False
+        self.update()
+
+    def _enforce_center_height_lock(self) -> None:
+        if not self.center_height_locked:
+            return
+        if self.camera_target.altitude_m != 0.0:
+            self.camera_target = replace(self.camera_target, altitude_m=0.0)
+        self.pan = QPointF()
+
+    def _move_ground_target_for_screen_delta(self, delta: QPointF) -> None:
+        if self.scale <= 0:
+            return
+        right = self.camera_orientation.right
+        up = self.camera_orientation.up
+        desired_x = delta.x() / self.scale
+        desired_y = delta.y() / self.scale
+        m00 = -right.east
+        m01 = -right.north
+        m10 = up.east
+        m11 = up.north
+        # Use the transpose of the ground-to-screen projection rather than its
+        # inverse. An inverse must move a very large distance across the surface
+        # to reproduce a vertical mouse drag when the ground is almost edge-on.
+        # The transpose naturally attenuates that component: full sensitivity
+        # from above, progressively less toward a side view, and zero in a
+        # direction where the ground has no visible screen-space extent.
+        east_delta = m00 * desired_x + m10 * desired_y
+        north_delta = m01 * desired_x + m11 * desired_y
+        self.camera_target = Point3D(
+            self.camera_target.east_m + east_delta,
+            self.camera_target.north_m + north_delta,
+            0.0,
+        )
+
+    def pan_by_screen(self, delta: QPointF) -> None:
+        """Pan in screen space while keeping a locked pivot on the ground plane."""
+        self.set_follow_live(False)
+        self._centered_section_id = None
+        if not self.center_height_locked:
+            self.pan += delta
+        elif self.scale > 0:
+            # Keep screen-space pan out of the altitude axis. Instead, move the
+            # world-space camera target across the local ground plane and leave
+            # its altitude and projected screen position fixed at zero/centre.
+            self._move_ground_target_for_screen_delta(delta)
+            self.pan = QPointF()
         self._needs_fit = False
         self.update()
 
     def set_center_height_locked(self, locked: bool) -> None:
         locked = bool(locked)
-        if self.center_height_locked == locked:
-            return
+        unchanged = self.center_height_locked == locked
         self.center_height_locked = locked
+        if locked:
+            self._enforce_center_height_lock()
+        if unchanged:
+            self.update()
+            return
         if self.follow_live and self._apply_live_follow(initialize=False):
             return
         if self._centered_section_id is not None:
@@ -773,18 +939,33 @@ class CourseCanvas(QWidget):
             if self._press_position is not None and (
                 position - self._press_position
             ).manhattanLength() > 3:
-                if not self._dragged:
+                if (
+                    not self._dragged
+                    and self._pressed_button
+                    in {Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton}
+                ):
                     self.set_follow_live(False)
                 self._dragged = True
-            if self.follow_live:
+            if self._pressed_button == Qt.MouseButton.LeftButton:
+                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    if self.follow_live:
+                        self.roll_follow_by(delta.x() * 0.45)
+                    else:
+                        self.roll_by(delta.x() * 0.45)
+                else:
+                    if self.follow_live:
+                        self.orbit_follow_by(
+                            delta.x() * 0.45,
+                            delta.y() * 0.35,
+                        )
+                    else:
+                        self.orbit_by(delta.x() * 0.45, delta.y() * 0.35)
+            elif self.follow_live:
                 self._last_mouse_position = position
                 event.accept()
                 return
-            if self._pressed_button == Qt.MouseButton.LeftButton:
-                self.orbit_by(delta.x() * 0.45, delta.y() * 0.35)
             else:
-                self._centered_section_id = None
-                self.pan += delta
+                self.pan_by_screen(delta)
             self._last_mouse_position = position
             self.update()
             event.accept()
@@ -839,6 +1020,8 @@ class CourseCanvas(QWidget):
             center = QPointF(self.width() / 2.0, self.height() / 2.0)
             cursor_offset = event.position() - center - self.pan
             self.pan -= cursor_offset * (self.scale / old_scale - 1.0)
+            if self.center_height_locked:
+                self._enforce_center_height_lock()
         if self.follow_live:
             self._apply_live_follow(initialize=False)
         self._needs_fit = False
@@ -851,21 +1034,28 @@ class CourseCanvas(QWidget):
         elif event.key() == Qt.Key.Key_Minus:
             self.scale = max(1e-7, self.scale / 1.2)
         elif event.key() == Qt.Key.Key_Left:
-            self.set_follow_live(False)
-            self._centered_section_id = None
-            self.pan += QPointF(20, 0)
+            self.pan_by_screen(QPointF(20, 0))
         elif event.key() == Qt.Key.Key_Right:
-            self.set_follow_live(False)
-            self._centered_section_id = None
-            self.pan += QPointF(-20, 0)
+            self.pan_by_screen(QPointF(-20, 0))
         elif event.key() == Qt.Key.Key_Up:
-            self.set_follow_live(False)
-            self._centered_section_id = None
-            self.pan += QPointF(0, 20)
+            self.pan_by_screen(QPointF(0, 20))
         elif event.key() == Qt.Key.Key_Down:
-            self.set_follow_live(False)
-            self._centered_section_id = None
-            self.pan += QPointF(0, -20)
+            self.pan_by_screen(QPointF(0, -20))
+        elif event.key() == Qt.Key.Key_R:
+            if self.follow_live:
+                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    self.roll_follow_by(180.0)
+                else:
+                    self._roll_degrees = 0.0
+                    self._rebuild_camera_orientation()
+                    self.update()
+                    self.follow_view_changed.emit()
+            elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.roll_by(180.0)
+            else:
+                self.set_roll(0.0)
+            event.accept()
+            return
         elif event.key() == Qt.Key.Key_T:
             self.top_view()
             event.accept()
@@ -987,6 +1177,9 @@ class CourseViewPanel(QWidget):
         self.canvas.stage_selected.connect(self.stage_selected)
         self.canvas.hovered_stage_changed.connect(self._hovered_stage_changed)
         self.canvas.follow_live_changed.connect(self._follow_live_changed)
+        self.canvas.follow_view_changed.connect(
+            lambda: self._update_status(self.canvas.scene)
+        )
         for widget, help_key in (
             (self.body_selector, "course_body"),
             (self.follow_button, "course_follow"),
@@ -1175,9 +1368,12 @@ class CourseViewPanel(QWidget):
             if scene.live_marker is None:
                 text += " · Follow ship is waiting for matching live coordinates"
             elif scene.live_marker.heading_degrees is None:
-                text += " · Following ship at 45°; heading unavailable"
+                text += (
+                    f" · Following ship at {self.canvas.follow_tilt_degrees:g}°; "
+                    "heading unavailable"
+                )
             else:
-                text += " · Following ship at 45°"
+                text += f" · Following ship at {self.canvas.follow_tilt_degrees:g}°"
             if self.canvas.follow_yaw_offset_degrees:
                 text += (
                     f" · camera rotated {self.canvas.follow_yaw_offset_degrees:g}°"

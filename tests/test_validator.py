@@ -21,6 +21,16 @@ def test_complete_sample_has_no_errors() -> None:
     assert errors(parse_text(SAMPLE)) == []
 
 
+def test_start_to_end_race_without_waypoints_is_valid() -> None:
+    document = parse_text(SAMPLE)
+    assert document.remove_waypoint(document.waypoints[0].section.node_id)
+
+    issues = validate_project(ProjectData(document=document))
+
+    assert not [issue for issue in issues if issue.severity is Severity.ERROR]
+    assert not [issue for issue in issues if "waypoint" in issue.message.casefold()]
+
+
 def test_new_document_is_a_saveable_draft_but_not_exportable() -> None:
     document = EventDocument.new()
     messages = errors(document)

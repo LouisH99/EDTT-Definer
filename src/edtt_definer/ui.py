@@ -1437,6 +1437,7 @@ class MainWindow(QMainWindow):
         self._collapsed_route_sections: set[str] = set()
         self._expanded_validation_groups: set[str] = set()
         self.live_result = LiveResult(LiveState.MISSING, None, "Waiting for game data.")
+        self._last_live_map_snapshot: LocationSnapshot | None = None
         self.trace_recorder = TraceRecorder()
         self.project = ProjectData.new()
         self.project_path: Path | None = None
@@ -1765,11 +1766,7 @@ class MainWindow(QMainWindow):
         self.project_path = path
         self.dirty = dirty
         self.refresh_navigation()
-        live_snapshot = (
-            self.live_result.snapshot
-            if self.live_result.state is LiveState.LIVE
-            else None
-        )
+        live_snapshot = self._map_snapshot_for_result(self.live_result)
         self.course_view.set_project(
             project,
             selected_section_id=self.current_section_id,
@@ -2983,13 +2980,6 @@ class MainWindow(QMainWindow):
         if not sections:
             return
         waypoints = [waypoint.section for waypoint in self.project.document.waypoints]
-        if len(waypoints) - len(sections) < 1:
-            QMessageBox.information(
-                self,
-                "Waypoint required",
-                "A time trial must contain at least one waypoint.",
-            )
-            return
         if len(sections) > 1:
             answer = QMessageBox.question(
                 self,
@@ -3007,14 +2997,29 @@ class MainWindow(QMainWindow):
             if self.project.document.remove_waypoint(section.node_id):
                 self.project.stage_metadata.pop(section.node_id, None)
                 self.project.capture_metadata.pop(section.node_id, None)
+                self._collapsed_route_sections.discard(section.node_id)
                 removed += 1
         if not removed:
             return
         remaining = [waypoint.section for waypoint in self.project.document.waypoints]
-        next_section = remaining[min(first_index, len(remaining) - 1)]
+        if remaining:
+            next_section = remaining[min(first_index, len(remaining) - 1)]
+        else:
+            end = self.project.document.end
+            start = self.project.document.start
+            event_info = self.project.document.event_info
+            next_section = (
+                end.section
+                if end is not None
+                else start.section
+                if start is not None
+                else event_info.section
+                if event_info is not None
+                else None
+            )
         self.dirty = True
-        self.current_section_id = next_section.node_id
-        self.refresh_navigation(next_section.node_id)
+        self.current_section_id = next_section.node_id if next_section is not None else None
+        self.refresh_navigation(self.current_section_id)
         self.refresh_validation_and_preview()
         self._update_title()
         self.statusBar().showMessage(f"Deleted {removed} waypoint(s).", 5000)
@@ -3049,25 +3054,50 @@ class MainWindow(QMainWindow):
     def _pull_live_update(self) -> None:
         result = self.live_reader.poll()
         self.live_watcher.refresh_paths()
+        self._display_live_result(result)
         if result.state is LiveState.LIVE:
-            self.live_stale_timer.start(max(1000, round(self.live_reader.stale_after * 1000)))
+            self.live_stale_timer.start(
+                max(1000, round(self.live_reader.stale_after * 1000))
+            )
         else:
             self.live_stale_timer.stop()
-        self._display_live_result(result)
 
     def _mark_live_stale(self) -> None:
-        if self.live_result.state is not LiveState.LIVE:
+        if (
+            self.live_result.state is not LiveState.LIVE
+            or self._last_live_map_snapshot is None
+        ):
             return
         self._display_live_result(
             LiveResult(
                 LiveState.STALE,
-                self.live_result.snapshot,
+                self._last_live_map_snapshot,
                 "No Status.json change has been detected recently; retaining the last valid reading.",
             )
         )
 
+    def _map_snapshot_for_result(self, result: LiveResult) -> LocationSnapshot | None:
+        if result.state is LiveState.NO_COORDINATES:
+            return None
+        if result.state in {LiveState.LIVE, LiveState.STALE} and result.snapshot:
+            if (
+                result.snapshot.has_coordinates
+                and result.snapshot.flag_has_lat_long is not False
+            ):
+                return result.snapshot
+        return self._last_live_map_snapshot
+
     def _display_live_result(self, result: LiveResult) -> None:
         self.live_result = result
+        if (
+            result.state in {LiveState.LIVE, LiveState.STALE}
+            and result.snapshot is not None
+            and result.snapshot.has_coordinates
+            and result.snapshot.flag_has_lat_long is not False
+        ):
+            self._last_live_map_snapshot = result.snapshot
+        elif result.state is LiveState.NO_COORDINATES:
+            self._last_live_map_snapshot = None
         self.live_status.setText(result.message)
         self._refresh_live_status_style()
         snapshot = result.snapshot
@@ -3083,9 +3113,7 @@ class MainWindow(QMainWindow):
             self._consider_radius_for_selected(snapshot)
         trace_snapshot = snapshot if result.state is LiveState.LIVE else None
         trace_changed = self.trace_recorder.consume(trace_snapshot)
-        self.course_view.set_live_snapshot(
-            trace_snapshot
-        )
+        self.course_view.set_live_snapshot(self._map_snapshot_for_result(result))
         if trace_changed:
             # The panel holds the same mutable RaceTrace, but explicitly setting
             # it keeps this contract clear for alternate panel implementations.
@@ -3371,6 +3399,8 @@ class MainWindow(QMainWindow):
         )
         self.capture_button.setEnabled(ready and stage_selected)
         self.capture_add_button.setEnabled(ready)
+        self.stage_form.capture_a_button.setEnabled(ready and stage_selected)
+        self.stage_form.capture_b_button.setEnabled(ready and stage_selected)
         snapshot = self.live_result.snapshot
         gate_ready = (
             ready
@@ -3568,7 +3598,11 @@ class MainWindow(QMainWindow):
 
     def _capture_to(self, section: SectionNode, endpoint: str | None) -> None:
         snapshot = self.live_result.snapshot
-        if snapshot is None or not snapshot.capture_ready:
+        if (
+            self.live_result.state is not LiveState.LIVE
+            or snapshot is None
+            or not snapshot.capture_ready
+        ):
             return
         stage = Stage(section)
         latitude = format(snapshot.latitude, "f")
@@ -3648,7 +3682,11 @@ class MainWindow(QMainWindow):
         if path:
             self.live_reader.set_journal_directory(path)
             self.live_watcher.set_journal_directory(path)
+            self._last_live_map_snapshot = None
+            self.live_stale_timer.stop()
+            self.course_view.set_live_snapshot(None)
             self.settings.setValue("journal_directory", path)
+            self.live_change_timer.start()
 
     def _recent_paths(self) -> list[str]:
         value = self.settings.value("recent_files", [], list)

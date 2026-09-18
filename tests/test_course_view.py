@@ -7,7 +7,7 @@ import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt
 from PySide6.QtGui import QCloseEvent, QMouseEvent
 
-from edtt_definer.course_scene import Point3D, SceneState, project_coordinate
+from edtt_definer.course_scene import Point3D, SceneState, build_course_scene
 from edtt_definer.course_view import CourseViewPanel
 from edtt_definer.live import LiveResult, LiveState, LocationSnapshot
 from edtt_definer.project import AltitudeMode, ProjectData, StageMetadata
@@ -163,6 +163,7 @@ def test_click_hover_and_camera_controls(qtbot) -> None:
     assert panel.canvas.yaw_degrees == 0
     assert panel.canvas.tilt_degrees == 0
 
+    panel.center_height_lock.setChecked(False)
     pan_before = QPoint(panel.canvas.pan.toPoint())
     start = QPoint(100, 100)
     finish = QPoint(140, 125)
@@ -172,7 +173,28 @@ def test_click_hover_and_camera_controls(qtbot) -> None:
     assert panel.canvas.pan.toPoint() != pan_before
 
 
-def test_manual_orbit_wraps_freely_through_full_vertical_axis(qtbot) -> None:
+def test_horizontal_mouse_orbit_matches_v066_direction(qtbot) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    panel.set_project(visual_project())
+
+    panel.canvas.yaw_degrees = 0
+    qtbot.mousePress(panel.canvas, Qt.MouseButton.LeftButton, pos=QPoint(120, 100))
+    qtbot.mouseMove(panel.canvas, QPoint(160, 100))
+    qtbot.mouseRelease(panel.canvas, Qt.MouseButton.LeftButton, pos=QPoint(160, 100))
+    right_drag_yaw = panel.canvas.yaw_degrees
+
+    panel.canvas.yaw_degrees = 0
+    qtbot.mousePress(panel.canvas, Qt.MouseButton.LeftButton, pos=QPoint(160, 100))
+    qtbot.mouseMove(panel.canvas, QPoint(120, 100))
+    qtbot.mouseRelease(panel.canvas, Qt.MouseButton.LeftButton, pos=QPoint(120, 100))
+    left_drag_yaw = panel.canvas.yaw_degrees
+
+    assert 0 < right_drag_yaw < 180
+    assert left_drag_yaw > 180
+
+
+def test_manual_orbit_reaches_below_course_but_stops_at_vertical_poles(qtbot) -> None:
     panel = CourseViewPanel()
     qtbot.addWidget(panel)
     panel.set_project(visual_project())
@@ -183,40 +205,10 @@ def test_manual_orbit_wraps_freely_through_full_vertical_axis(qtbot) -> None:
     assert panel.canvas.tilt_degrees == pytest.approx(100)
 
     panel.canvas.orbit_by(0, 280)
-    assert panel.canvas.tilt_degrees == pytest.approx(20)
+    assert panel.canvas.tilt_degrees == pytest.approx(180)
 
-    panel.canvas.orbit_by(0, -40)
-    assert panel.canvas.tilt_degrees == pytest.approx(340)
-
-
-@pytest.mark.parametrize("tilt_degrees", [45, 135, 225, 315])
-def test_altitude_projects_up_through_the_full_vertical_orbit(
-    qtbot, tilt_degrees: float
-) -> None:
-    panel = CourseViewPanel()
-    qtbot.addWidget(panel)
-    panel.canvas.yaw_degrees = 0
-    panel.canvas.tilt_degrees = tilt_degrees
-    panel.canvas.camera_target = Point3D(0, 0, 0)
-    surface = project_coordinate(
-        "44.353741",
-        "112.001579",
-        "44.327717",
-        "111.931267",
-        "1297.896750",
-        0,
-    )
-    low = Point3D(surface.east_m, surface.north_m, 76)
-    high = Point3D(surface.east_m, surface.north_m, 506)
-
-    low_x, low_y, _low_depth = panel.canvas._camera_coordinates(low)
-    high_x, high_y, _high_depth = panel.canvas._camera_coordinates(high)
-
-    assert high_x == pytest.approx(low_x)
-    assert high_y < low_y
-    expected_surface_y = -surface.north_m * math.cos(math.radians(tilt_degrees))
-    _surface_x, surface_y, _surface_depth = panel.canvas._camera_coordinates(surface)
-    assert surface_y == pytest.approx(expected_surface_y)
+    panel.canvas.orbit_by(0, -400)
+    assert panel.canvas.tilt_degrees == pytest.approx(0)
 
 
 def test_center_height_lock_defaults_to_ground_and_double_click_centers_stage(
@@ -267,6 +259,87 @@ def test_center_height_lock_defaults_to_ground_and_double_click_centers_stage(
         panel.canvas.height() / 2
     )
 
+    panel.center_height_lock.setChecked(True)
+    target_before = panel.canvas.camera_target
+    start = QPoint(100, 100)
+    finish = QPoint(140, 160)
+    qtbot.mousePress(panel.canvas, Qt.MouseButton.RightButton, pos=start)
+    qtbot.mouseMove(panel.canvas, finish)
+    qtbot.mouseRelease(panel.canvas, Qt.MouseButton.RightButton, pos=finish)
+    assert panel.canvas.camera_target != target_before
+    assert panel.canvas.camera_target.altitude_m == 0
+    assert panel.canvas.pan == QPointF()
+
+    panel.canvas.roll_by(63)
+    rolled_target = panel.canvas.camera_target
+    panel.canvas.pan_by_screen(QPointF(30, -45))
+    assert panel.canvas.camera_target != rolled_target
+    assert panel.canvas.camera_target.altitude_m == 0
+    assert panel.canvas.pan == QPointF()
+
+
+def test_ground_lock_normalizes_camera_even_when_scene_cannot_be_fitted(qtbot) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    panel.set_project(visual_project())
+    panel.center_height_lock.setChecked(False)
+    panel.canvas.camera_target = Point3D(10.0, 20.0, 750.0)
+    panel.canvas.pan = QPointF(15.0, 35.0)
+    panel.canvas.set_scene(build_course_scene(ProjectData.new()))
+
+    panel.center_height_lock.setChecked(True)
+
+    assert panel.canvas.camera_target.altitude_m == 0
+    assert panel.canvas.pan == QPointF()
+
+    panel.canvas.camera_target = Point3D(10.0, 20.0, 500.0)
+    panel.canvas.pan = QPointF(5.0, 25.0)
+    panel.canvas.set_center_height_locked(True)
+    assert panel.canvas.camera_target.altitude_m == 0
+    assert panel.canvas.pan == QPointF()
+
+
+def test_locked_vertical_pan_slows_toward_side_view(qtbot) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    panel.set_project(visual_project())
+    panel.canvas.scale = 2.0
+
+    distances: list[float] = []
+    for tilt in (0.0, 45.0, 80.0, 90.0):
+        panel.canvas.camera_target = Point3D(0.0, 0.0, 0.0)
+        panel.canvas.tilt_degrees = tilt
+        panel.canvas.pan_by_screen(QPointF(0.0, 100.0))
+        distances.append(
+            math.hypot(
+                panel.canvas.camera_target.east_m,
+                panel.canvas.camera_target.north_m,
+            )
+        )
+        assert panel.canvas.camera_target.altitude_m == 0
+        assert panel.canvas.pan == QPointF()
+
+    assert distances[0] == pytest.approx(50.0)
+    assert distances[0] > distances[1] > distances[2] > distances[3]
+    assert distances[3] == pytest.approx(0.0, abs=1e-10)
+
+
+def test_locked_fit_uses_ground_target_without_orbit_jump(qtbot) -> None:
+    panel = CourseViewPanel()
+    panel.resize(850, 600)
+    qtbot.addWidget(panel)
+    panel.set_project(visual_project())
+    panel.canvas.yaw_degrees = 37
+    panel.canvas.fit_view()
+    target_after_fit = panel.canvas.camera_target
+
+    assert panel.canvas.pan == QPointF()
+    assert target_after_fit.altitude_m == 0
+
+    panel.canvas.orbit_by(1, 0)
+    assert panel.canvas.pan == QPointF()
+    assert panel.canvas.camera_target == target_after_fit
+
 
 def test_follow_ship_centers_live_marker_and_rotates_with_heading(qtbot) -> None:
     panel = CourseViewPanel()
@@ -274,6 +347,7 @@ def test_follow_ship_centers_live_marker_and_rotates_with_heading(qtbot) -> None
     qtbot.addWidget(panel)
     panel.show()
     panel.set_project(visual_project(), live_snapshot=live_snapshot(heading="135"))
+    panel.center_height_lock.setChecked(False)
     qtbot.mouseClick(panel.follow_button, Qt.MouseButton.LeftButton)
 
     assert panel.follow_button.isChecked()
@@ -326,7 +400,61 @@ def test_follow_ship_centers_live_marker_and_rotates_with_heading(qtbot) -> None
     assert screen_position.y() == pytest.approx(panel.canvas.height() / 2)
 
 
-def test_follow_waits_for_live_data_and_manual_navigation_stops_it(qtbot) -> None:
+def test_ground_lock_keeps_follow_camera_centered_below_live_marker(qtbot) -> None:
+    panel = CourseViewPanel()
+    panel.resize(850, 600)
+    qtbot.addWidget(panel)
+    panel.show()
+    panel.set_project(visual_project(), live_snapshot=live_snapshot(heading="135"))
+
+    qtbot.mouseClick(panel.follow_button, Qt.MouseButton.LeftButton)
+
+    marker = panel.canvas.scene.live_marker
+    assert marker is not None
+    ground = Point3D(marker.position.east_m, marker.position.north_m, 0.0)
+    ground_position = panel.canvas.world_to_screen(ground)
+    marker_position = panel.canvas.world_to_screen(marker.position)
+    assert panel.center_height_lock.isChecked()
+    assert panel.canvas.pan.y() == 0
+    assert ground_position.x() == pytest.approx(panel.canvas.width() / 2)
+    assert ground_position.y() == pytest.approx(panel.canvas.height() / 2)
+    assert marker_position.y() < ground_position.y()
+
+
+def test_side_views_keep_altitude_above_ground_and_explicit_roll_inverts(qtbot) -> None:
+    panel = CourseViewPanel()
+    panel.resize(850, 600)
+    qtbot.addWidget(panel)
+    panel.show()
+    panel.set_project(visual_project())
+    panel.canvas.yaw_degrees = 0
+    panel.canvas.tilt_degrees = 90
+    ground = Point3D(0.0, 0.0, 0.0)
+    elevated = Point3D(0.0, 0.0, 950.0)
+    assert panel.canvas.roll_degrees == 0
+    assert panel.canvas.world_to_screen(elevated).y() < panel.canvas.world_to_screen(ground).y()
+
+    panel.canvas.yaw_degrees = 180
+    assert panel.canvas.world_to_screen(elevated).y() < panel.canvas.world_to_screen(ground).y()
+    depth_before_roll = panel.canvas.camera_orientation.depth
+
+    qtbot.keyClick(
+        panel.canvas,
+        Qt.Key.Key_R,
+        modifier=Qt.KeyboardModifier.ShiftModifier,
+    )
+
+    assert panel.canvas.roll_degrees == 180
+    assert panel.canvas.camera_orientation.depth == depth_before_roll
+    assert panel.canvas.world_to_screen(elevated).y() > panel.canvas.world_to_screen(ground).y()
+
+    panel.canvas.roll_by(37)
+    qtbot.keyClick(panel.canvas, Qt.Key.Key_R)
+    assert panel.canvas.roll_degrees == 0
+    assert panel.canvas.world_to_screen(elevated).y() < panel.canvas.world_to_screen(ground).y()
+
+
+def test_follow_keeps_orbit_angle_but_panning_stops_it(qtbot) -> None:
     panel = CourseViewPanel()
     panel.resize(850, 600)
     qtbot.addWidget(panel)
@@ -346,11 +474,42 @@ def test_follow_waits_for_live_data_and_manual_navigation_stops_it(qtbot) -> Non
     qtbot.mousePress(panel.canvas, Qt.MouseButton.LeftButton, pos=start)
     qtbot.mouseMove(panel.canvas, finish)
     qtbot.mouseRelease(panel.canvas, Qt.MouseButton.LeftButton, pos=finish)
+    assert panel.follow_button.isChecked()
+    assert panel.canvas.follow_live
+    assert panel.canvas.follow_yaw_offset_degrees == pytest.approx(22.5)
+    assert panel.canvas.yaw_degrees == pytest.approx(62.5)
+    assert panel.canvas.follow_tilt_degrees == pytest.approx(55.5)
+    assert panel.canvas.tilt_degrees == pytest.approx(55.5)
+    assert "Following ship at 55.5°" in panel.status_label.text()
+    assert "camera rotated 22.5°" in panel.status_label.text()
+
+    panel.canvas.roll_follow_by(35)
+    panel.set_live_snapshot(live_snapshot("0.013", "0.01", "80"))
+    assert panel.canvas.follow_live
+    assert panel.canvas.yaw_degrees == pytest.approx(102.5)
+    assert panel.canvas.tilt_degrees == pytest.approx(55.5)
+    assert panel.canvas.roll_degrees == pytest.approx(35)
+    marker = panel.canvas.scene.live_marker
+    assert marker is not None
+    ground_or_ship = Point3D(
+        marker.position.east_m,
+        marker.position.north_m,
+        0.0 if panel.canvas.center_height_locked else marker.position.altitude_m,
+    )
+    center = panel.canvas.world_to_screen(ground_or_ship)
+    assert center.x() == pytest.approx(panel.canvas.width() / 2)
+    assert center.y() == pytest.approx(panel.canvas.height() / 2)
+
+    qtbot.mousePress(panel.canvas, Qt.MouseButton.RightButton, pos=start)
+    qtbot.mouseMove(panel.canvas, finish)
+    qtbot.mouseRelease(panel.canvas, Qt.MouseButton.RightButton, pos=finish)
     assert not panel.follow_button.isChecked()
     assert not panel.canvas.follow_live
 
     qtbot.mouseClick(panel.follow_button, Qt.MouseButton.LeftButton)
     assert panel.canvas.follow_yaw_offset_degrees == 0
+    assert panel.canvas.follow_tilt_degrees == pytest.approx(45)
+    assert panel.canvas.roll_degrees == pytest.approx(0)
     qtbot.mouseClick(panel.top_button, Qt.MouseButton.LeftButton)
     assert not panel.follow_button.isChecked()
     assert panel.canvas.tilt_degrees == 0
@@ -358,6 +517,63 @@ def test_follow_waits_for_live_data_and_manual_navigation_stops_it(qtbot) -> Non
     qtbot.mouseClick(panel.follow_button, Qt.MouseButton.LeftButton)
     qtbot.mouseClick(panel.fit_button, Qt.MouseButton.LeftButton)
     assert not panel.follow_button.isChecked()
+
+
+def test_map_retains_last_known_marker_until_coordinates_are_authoritatively_cleared(
+    qtbot,
+) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    window.live_stale_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(visual_project(), None, dirty=False)
+    snapshot = live_snapshot()
+
+    window._display_live_result(LiveResult(LiveState.LIVE, snapshot, "Live"))
+    assert window.course_view.canvas.scene.live_marker is not None
+
+    window._display_live_result(
+        LiveResult(LiveState.INVALID, snapshot, "Status.json is being replaced")
+    )
+    assert window.course_view.canvas.scene.live_marker is not None
+
+    window._display_live_result(LiveResult(LiveState.LIVE, snapshot, "Live"))
+    window._mark_live_stale()
+    assert window.live_result.state is LiveState.STALE
+    assert window.course_view.canvas.scene.live_marker is not None
+
+    window._display_live_result(
+        LiveResult(LiveState.MISSING, snapshot, "Status.json is temporarily missing")
+    )
+    assert window.course_view.canvas.scene.live_marker is not None
+
+    no_coordinates = LocationSnapshot(system=snapshot.system, body=snapshot.body)
+    window._display_live_result(
+        LiveResult(
+            LiveState.NO_COORDINATES,
+            no_coordinates,
+            "No planetary coordinates",
+        )
+    )
+    assert window.course_view.canvas.scene.live_marker is None
+
+
+def test_parseable_stale_snapshot_is_available_as_last_known_map_position(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    window.live_stale_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(visual_project(), None, dirty=False)
+
+    window._display_live_result(
+        LiveResult(LiveState.STALE, live_snapshot(), "Status.json is old")
+    )
+
+    assert window.course_view.canvas.scene.live_marker is not None
+    assert not window.capture_button.isEnabled()
+    assert not window.capture_add_button.isEnabled()
+    assert not window.stage_form.capture_a_button.isEnabled()
+    assert not window.stage_form.capture_b_button.isEnabled()
 
 
 def test_editor_selection_changes_body_and_live_marker_is_filtered(qtbot) -> None:
@@ -458,14 +674,23 @@ def test_project_refresh_updates_geometry_without_resetting_camera(qtbot) -> Non
     panel.canvas.fit_view()
     panel.canvas.yaw_degrees = 31
     panel.canvas.tilt_degrees = 42
+    panel.canvas.orbit_by(17, -23)
     old_scale = panel.canvas.scale
+    old_basis = (
+        panel.canvas.camera_orientation.right,
+        panel.canvas.camera_orientation.up,
+        panel.canvas.camera_orientation.depth,
+    )
     waypoint = project.document.waypoints[0].section
 
     waypoint.set_value("Position", "0.01,-0.02 to 0.01,0.02")
     panel.refresh_project(project)
 
-    assert panel.canvas.yaw_degrees == 31
-    assert panel.canvas.tilt_degrees == 42
+    assert panel.canvas.yaw_degrees == 48
+    assert panel.canvas.tilt_degrees == 19
+    assert panel.canvas.camera_orientation.right == old_basis[0]
+    assert panel.canvas.camera_orientation.up == old_basis[1]
+    assert panel.canvas.camera_orientation.depth == old_basis[2]
     assert panel.canvas.scale == pytest.approx(old_scale)
     gate = next(
         stage for stage in panel.canvas.scene.stages if stage.section_id == waypoint.node_id

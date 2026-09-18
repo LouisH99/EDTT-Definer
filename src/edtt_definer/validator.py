@@ -364,12 +364,6 @@ def validate_document(document: EventDocument) -> list[ValidationIssue]:
         count = len(document.sections(kind))
         if count != 1:
             _issue(issues, Severity.ERROR, f"Exactly one [{kind.value}] block is required (found {count}).")
-    if not document.sections(SectionType.WAYPOINT):
-        _issue(
-            issues,
-            Severity.WARNING,
-            "This event has no intermediate [waypoint] block; it runs directly from start to end.",
-        )
     if actual_order:
         canonical = (
             actual_order[0] is SectionType.EVENTINFO

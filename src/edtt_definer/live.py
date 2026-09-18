@@ -212,6 +212,7 @@ class LiveLocationReader:
 
     def set_journal_directory(self, path: str | Path) -> None:
         self.journal_directory = Path(path)
+        self.last_snapshot = None
         self.context = JournalContext()
         self._journal_path = None
         self._journal_offset = 0

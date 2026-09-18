@@ -168,7 +168,7 @@ HELP_TEXT = {
     ),
     "delete_waypoint": (
         "Delete all selected waypoints and their editor-only metadata. Multiple deletions require "
-        "confirmation, and at least one waypoint must remain."
+        "confirmation. The final waypoint may be deleted when the race runs directly from Start to End."
     ),
     "delete_section_separator": (
         "Remove only the selected editor-only lap/section divider. The waypoint and all race data remain unchanged."
@@ -201,16 +201,20 @@ HELP_TEXT = {
         "coordinate space, so the course view shows one body group at a time."
     ),
     "course_follow": (
-        "Keep the matching live ship or SRV position centered with a 45-degree camera tilt. The camera "
-        "rotates with live heading so the vehicle initially points toward the top. Click Follow ship again "
-        "to rotate the camera another 90 degrees around the vehicle while continuing to follow. Zoom remains "
-        "available; orbiting, panning, Top, or Fit turns follow mode off. If live data is unavailable, follow "
-        "waits for it."
+        "Follow the matching live ship or SRV position with a 45-degree camera tilt. With Lock center at 0 m, "
+        "the ground directly below the vehicle stays centered; without the lock, the vehicle itself is centered. "
+        "The camera rotates with live heading so the vehicle initially points toward the top. Click Follow ship "
+        "again to rotate the camera another 90 degrees around the vehicle while continuing to follow. Left-drag "
+        "freely changes the heading-relative camera angle, and Shift + left-drag changes roll, without stopping "
+        "follow. Zoom also remains available; right- or middle-drag panning, Top, or Fit turns follow mode off. If live data is unavailable, "
+        "follow waits for it."
     ),
     "course_center_height_lock": (
-        "Keep the camera's orbit center on ground level at 0 metres. This is enabled by default. When "
-        "disabled, double-clicking a checkpoint centers the orbit at that checkpoint's actual altitude, "
-        "and Fit uses the course's vertical midpoint."
+        "Constrain the camera's world-space orbit pivot to the ground plane at exactly 0 metres. This is "
+        "enabled by default. Panning moves the pivot across the surface instead of adding altitude, including "
+        "in rolled and side-on views. Up/down ground panning becomes progressively slower as the view approaches "
+        "a horizontal side view, preventing large distance jumps. When disabled, double-clicking a checkpoint "
+        "centers the orbit at that checkpoint's actual altitude, and Fit uses the course's vertical midpoint."
     ),
     "course_top": (
         "Turn off ship following, return to the straight-down course overview with North up, and fit the "
@@ -226,11 +230,13 @@ HELP_TEXT = {
         "their coordinates are incomplete or invalid."
     ),
     "course_canvas": (
-        "Interactive true-scale 3D course overview. Left-drag rotates freely through 360 degrees around "
-        "both axes, right- or middle-drag pans, and the "
-        "mouse wheel zooms. Manual orbit or pan stops Follow ship. Click a checkpoint to select it in the "
-        "editor, or double-click it to select it and make it the camera's orbit center. Keyboard: arrows "
-        "pan, plus/minus zoom, T returns to Top, and F fits the view."
+        "Interactive true-scale 3D course overview. Left-drag orbits from directly above through a side "
+        "view to directly below while keeping planetary altitude screen-up; yaw reaches every side without "
+        "crossing a camera-flipping pole. Shift + left-drag rolls the camera intentionally. Press R to restore "
+        "upright roll or Shift + R to turn the view 180 degrees. Right- or middle-drag pans, and the mouse wheel zooms. While following "
+        "the ship, left-drag orbit and roll keep following active; panning stops it. Click a checkpoint to select it in the editor, or double-click it to "
+        "select it and make it the camera's orbit center. Keyboard: arrows pan, plus/minus zoom, T returns "
+        "to Top, and F fits the view."
     ),
     "trace_record": (
         "Start a new live race-line recording for the body currently shown. This replaces any loaded "

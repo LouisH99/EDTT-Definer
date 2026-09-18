@@ -126,6 +126,22 @@ def test_missing_status_file(tmp_path: Path) -> None:
     assert result.state is LiveState.MISSING
 
 
+def test_changing_journal_directory_clears_previous_snapshot(tmp_path: Path) -> None:
+    first_directory = tmp_path / "first"
+    second_directory = tmp_path / "second"
+    first_directory.mkdir()
+    second_directory.mkdir()
+    write_status(first_directory, Latitude=1, Longitude=2)
+    reader = LiveLocationReader(first_directory)
+    assert reader.poll().snapshot is not None
+
+    reader.set_journal_directory(second_directory)
+
+    result = reader.poll()
+    assert result.state is LiveState.MISSING
+    assert result.snapshot is None
+
+
 def test_scan_event_supplies_exact_body_radius_and_persistent_cache(tmp_path: Path) -> None:
     journal = tmp_path / "Journal.2026-01-01T000000.01.log"
     events = [
