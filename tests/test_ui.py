@@ -8,6 +8,7 @@ from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QFileDialog,
     QInputDialog,
     QLabel,
@@ -29,6 +30,7 @@ from edtt_definer.ui import (
     RaceConversionDialog,
 )
 from edtt_definer.updates import ReleaseInfo
+from edtt_definer.widgets import WheelSafeComboBox
 
 from .test_parser import SAMPLE, WRAPPED_SAMPLE
 
@@ -61,7 +63,7 @@ class FakeUpdateClient(QObject):
 
 
 def test_patch_release_version_is_visible() -> None:
-    assert APP_DISPLAY_NAME == "EDTT Definer v0.6.7"
+    assert APP_DISPLAY_NAME == "EDTT Definer v0.7.0"
 
 
 def test_new_course_uses_authoring_defaults(qtbot) -> None:
@@ -183,6 +185,48 @@ def test_add_duplicate_move_and_delete_waypoints(qtbot) -> None:
     window.dirty = False
 
 
+def test_project_version_label_increments_on_every_successful_save(qtbot, tmp_path) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window.project_path = tmp_path / "versioned.edttc.json"
+
+    assert window.project_version_label.text() == "Time trial not saved yet"
+    assert window.save_project()
+    assert window.project.time_trial_version == 1
+    assert window.project_version_label.text().startswith("Time-trial version 1 · Last saved ")
+
+    assert window.save_project()
+    assert window.project.time_trial_version == 2
+    assert window.project_version_label.text().startswith("Time-trial version 2 · Last saved ")
+    assert not window.dirty
+
+
+def test_all_combo_boxes_ignore_wheel_changes_while_closed(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+
+    combos = window.findChildren(QComboBox)
+    assert combos
+    assert all(isinstance(combo, WheelSafeComboBox) for combo in combos)
+
+    class ClosedWheelEvent:
+        ignored = False
+
+        def ignore(self) -> None:
+            self.ignored = True
+
+    combo = window.stage_form.altitude_mode
+    original_index = combo.currentIndex()
+    event = ClosedWheelEvent()
+    combo.wheelEvent(event)
+
+    assert event.ignored
+    assert combo.currentIndex() == original_index
+    window.dirty = False
+
+
 def test_final_waypoint_can_be_deleted_and_added_again(qtbot) -> None:
     window = MainWindow()
     window.poll_timer.stop()
@@ -223,7 +267,7 @@ def test_waypoint_names_follow_duplicate_move_and_delete(qtbot) -> None:
 
     assert window.navigation.currentItem().text() == "Waypoint 1 — Canyon Gate"
     assert window.project.stage_metadata[original.node_id].display_name == "Canyon Gate"
-    assert "Canyon Gate" not in window.preview.toPlainText()
+    assert "<!-- EDTTD: WP1 — Canyon Gate -->" in window.preview.toPlainText()
 
     window.duplicate_waypoint()
     duplicate = window._current_waypoint()
@@ -363,6 +407,7 @@ def test_editor_only_section_divider_can_be_added_renamed_and_removed(
     window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
     waypoint = window.project.document.waypoints[0].section
     original_export = window.preview.toPlainText()
+    assert "<!-- EDTTD: WP1 -->" in original_export
     window.refresh_navigation(waypoint.node_id)
     answers = iter((("Lap 1", True), ("Canyon section", True)))
     monkeypatch.setattr(
@@ -384,7 +429,7 @@ def test_editor_only_section_divider_can_be_added_renamed_and_removed(
     assert divider.font().bold()
     assert window.navigation.currentItem() is divider
     assert window.waypoint_buttons["Delete"].text() == "Delete section"
-    assert window.preview.toPlainText() == original_export
+    assert "<!-- EDTTD: (Lap 1) WP1 -->" in window.preview.toPlainText()
 
     window.edit_section_separator()
     assert window.project.metadata_for(waypoint.node_id).separator_before == "Canyon section"
@@ -400,7 +445,8 @@ def test_editor_only_section_divider_can_be_added_renamed_and_removed(
         window.navigation.item(row).data(Qt.ItemDataRole.UserRole) is not None
         for row in range(window.navigation.count())
     )
-    assert window.preview.toPlainText() == original_export
+    assert "<!-- EDTTD: WP1 — Gate A -->" in window.preview.toPlainText()
+    assert "Canyon section" not in window.preview.toPlainText()
     window.dirty = False
 
 
@@ -495,8 +541,8 @@ def test_selected_divider_duplicates_its_complete_section(qtbot) -> None:
         duplicate_first.node_id,
         duplicate_second.node_id,
     ]
-    assert "Lap 1" not in window.preview.toPlainText()
-    assert "Lap 3" not in window.preview.toPlainText()
+    assert "<!-- EDTTD: (Lap 1) WP1 — Alpha -->" in window.preview.toPlainText()
+    assert "<!-- EDTTD: (Lap 3) WP3 — Alpha (copy) -->" in window.preview.toPlainText()
     window.dirty = False
 
 
@@ -569,8 +615,8 @@ def test_reverse_selected_waypoints_preserves_data_and_divider_positions(
     ] == ["Charlie", "Bravo", "Alpha"]
     assert confirmations == [[first.node_id, second.node_id, third.node_id]]
     assert len(window._selected_waypoints()) == 3
-    assert "Lap 1" not in window.preview.toPlainText()
-    assert "Technical section" not in window.preview.toPlainText()
+    assert "<!-- EDTTD: (Lap 1) WP1 — Charlie -->" in window.preview.toPlainText()
+    assert "<!-- EDTTD: (Technical section) WP3 — Alpha -->" in window.preview.toPlainText()
     window.dirty = False
 
 
@@ -683,6 +729,30 @@ def test_capture_selected_and_capture_add(qtbot) -> None:
     window.capture_and_add()
     assert len(window.project.document.waypoints) == before + 1
     assert window.project.document.waypoints[-1].get("Position") == "1.234567,2.345678"
+    window.dirty = False
+
+
+def test_start_and_end_names_are_shown_and_exported_as_comments(qtbot) -> None:
+    window = MainWindow()
+    window.poll_timer.stop()
+    qtbot.addWidget(window)
+    window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    start = window.project.document.start.section
+    end = window.project.document.end.section
+
+    window.refresh_navigation(start.node_id)
+    window.stage_form.waypoint_name.setText("Crater Entrance")
+    assert window.navigation.currentItem().text() == "Start — Crater Entrance"
+    assert window.stage_form.waypoint_name_label.text() == "Start name (editor only)"
+
+    window.refresh_navigation(end.node_id)
+    window.stage_form.waypoint_name.setText("Crater Finish")
+    assert window.navigation.currentItem().text() == "End — Crater Finish"
+    assert window.stage_form.waypoint_name_label.text() == "End name (editor only)"
+
+    preview = window.preview.toPlainText()
+    assert "[start]\n<!-- EDTTD: Start — Crater Entrance -->\nPlayerState=Ship" in preview
+    assert "[end]\n<!-- EDTTD: End — Crater Finish -->\nPlayerState=ShipPass" in preview
     window.dirty = False
 
 
@@ -1290,6 +1360,8 @@ def test_create_edcopilot_txt_action_writes_text_not_json(qtbot, monkeypatch, tm
     window.poll_timer.stop()
     qtbot.addWidget(window)
     window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
+    window.project_path = tmp_path / "race.edttc.json"
+    assert window.save_project()
     chosen_path = tmp_path / "race"
     monkeypatch.setattr(
         QFileDialog,
@@ -1311,8 +1383,9 @@ def test_create_edcopilot_txt_action_writes_text_not_json(qtbot, monkeypatch, tm
     assert not content.lstrip().startswith("{")
     assert "[eventinfo]" in content
     assert "EndInstruction=Finished." in content
+    assert "EDTTD: Time-trial version 1" in content
     assert messages
-    window.dirty = False
+    assert not window.dirty
 
 
 def test_vehicle_mismatch_requires_confirmation_before_export(
@@ -1354,6 +1427,8 @@ def test_confirmed_vehicle_mismatch_can_be_exported(qtbot, monkeypatch, tmp_path
     qtbot.addWidget(window)
     window._set_project(ProjectData(document=parse_text(SAMPLE)), None, dirty=False)
     window.project.document.event_info.set("RaceType", "FIGHTER")
+    window.project_path = tmp_path / "confirmed.edttc.json"
+    assert window.save_project()
     output = tmp_path / "confirmed.export.txt"
     monkeypatch.setattr(window, "_confirm_vehicle_mismatch_export", lambda _mismatch: True)
     monkeypatch.setattr(
@@ -1367,7 +1442,7 @@ def test_confirmed_vehicle_mismatch_can_be_exported(qtbot, monkeypatch, tmp_path
 
     assert output.is_file()
     assert "RaceType=FIGHTER" in output.read_text(encoding="utf-8")
-    window.dirty = False
+    assert not window.dirty
 
 
 def test_flying_start_choices_only_appear_for_start_and_first_waypoint(qtbot) -> None:

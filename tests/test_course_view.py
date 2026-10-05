@@ -84,6 +84,11 @@ def test_panel_starts_at_fitted_45_degree_overview_and_renders_course(qtbot) -> 
     assert not image.isNull()
     assert image.width() > 250
     assert "altitude scale 1:1" in panel.status_label.text()
+    assert (
+        panel.course_distance_label.text()
+        == "Course distance: 1.889 km · surface route between checkpoint centres"
+    )
+    assert "surface distance" in panel.course_distance_label.accessibleDescription()
     assert panel.body_selector.count() == 1
 
 

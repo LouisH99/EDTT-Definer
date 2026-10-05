@@ -36,13 +36,14 @@ from .course_scene import (
     body_key_for_section,
     build_course_scene,
 )
-from .help_text import set_help
+from .help_text import set_help, set_help_text
 from .live import LocationSnapshot
 from .model import SectionType
 from .project import ProjectData
 from .radius import BodyRadiusCache
 from .theme import is_dark_theme, semantic_color
 from .trace import RaceTrace, TraceState
+from .widgets import WheelSafeComboBox
 
 
 DEFAULT_OVERVIEW_YAW_DEGREES = 0.0
@@ -1101,7 +1102,7 @@ class CourseViewPanel(QWidget):
         self._current_body_key: BodyKey | None = None
         self._updating_bodies = False
 
-        self.body_selector = QComboBox()
+        self.body_selector = WheelSafeComboBox()
         self.body_selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.body_selector.setMinimumContentsLength(18)
         self.top_button = QPushButton("Top")
@@ -1121,6 +1122,16 @@ class CourseViewPanel(QWidget):
         self.trace_status_label.setWordWrap(True)
         self.status_label = QLabel("Course view is waiting for project data.")
         self.status_label.setWordWrap(True)
+        self.course_distance_label = QLabel("Course distance: unavailable")
+        self.course_distance_label.setWordWrap(True)
+        self.course_distance_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        set_help_text(
+            self.course_distance_label,
+            "The summed great-circle surface distance from Start through each waypoint "
+            "to End. Gate checkpoints use their spherical midpoint; altitude is not included.",
+        )
         self.warning_label = QLabel()
         self.warning_label.setWordWrap(True)
         self.warning_label.setVisible(False)
@@ -1158,6 +1169,7 @@ class CourseViewPanel(QWidget):
         layout.addLayout(trace_controls)
         layout.addWidget(self.trace_status_label)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.course_distance_label)
         layout.addWidget(self.warning_label)
         layout.addWidget(self.canvas, 1)
         layout.addWidget(self.detail_label)
@@ -1384,6 +1396,21 @@ class CourseViewPanel(QWidget):
             else " · camera center uses checkpoint/course altitude"
         )
         self.status_label.setText(text)
+        if scene.course_distance_m is not None:
+            distance = f"{scene.course_distance_m / 1000:,.3f} km"
+            self.course_distance_label.setText(
+                f"Course distance: {distance} · surface route between checkpoint centres"
+            )
+        else:
+            reason = scene.course_distance_message
+            if not reason:
+                if scene.state is SceneState.NO_RADIUS:
+                    reason = "a valid BodyRadius is required"
+                elif scene.state is SceneState.NO_VALID_STAGES:
+                    reason = "valid route coordinates are required"
+                else:
+                    reason = "a complete single-body route is required"
+            self.course_distance_label.setText(f"Course distance: unavailable — {reason}")
         warnings: list[str] = []
         if scene.radius_warning:
             warnings.append(scene.radius_warning)

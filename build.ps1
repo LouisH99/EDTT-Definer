@@ -1,5 +1,5 @@
 param(
-    [string]$Name = "EDTT-Definer-v0.6.7"
+    [string]$Name = "EDTT-Definer-v0.7.0"
 )
 
 $ErrorActionPreference = "Stop"

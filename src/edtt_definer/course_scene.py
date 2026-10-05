@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 
-from .geometry import spherical_midpoint
+from .geometry import great_circle_distance_m, spherical_midpoint
 from .live import LocationSnapshot
 from .model import Position, SectionNode, SectionType
 from .project import (
@@ -145,6 +145,8 @@ class CourseScene:
     message: str
     trace_segments: tuple[SceneTraceSegment, ...] = ()
     trace_message: str = ""
+    course_distance_m: float | None = None
+    course_distance_message: str = ""
 
 
 @dataclass(frozen=True)
@@ -196,14 +198,14 @@ def _stage_sources(project: ProjectData) -> list[_StageSource]:
         if kind is SectionType.WAYPOINT:
             waypoint_number += 1
             number = waypoint_number
-            name = project.stage_metadata.get(
-                section.node_id, StageMetadata()
-            ).display_name.strip()
+            name = project.stage_metadata.get(section.node_id, StageMetadata()).display_name.strip()
             label = f"Waypoint {number}" + (f" — {name}" if name else "")
         elif kind is SectionType.START:
-            label = "Start"
+            name = project.stage_metadata.get(section.node_id, StageMetadata()).display_name.strip()
+            label = "Start" + (f" — {name}" if name else "")
         else:
-            label = "End"
+            name = project.stage_metadata.get(section.node_id, StageMetadata()).display_name.strip()
+            label = "End" + (f" — {name}" if name else "")
         system_name = section.value("System").strip()
         body_name = section.value("Body").strip()
         result.append(
@@ -476,6 +478,33 @@ def _stage_validation_notes(project: ProjectData) -> dict[str, tuple[SceneValida
     return {section_id: tuple(notes) for section_id, notes in grouped.items()}
 
 
+def _course_surface_distance(
+    all_sources: list[_StageSource],
+    group: BodyGroup,
+    geographic: list[_GeographicStage],
+    radius_km: Decimal,
+) -> tuple[float | None, str]:
+    if not group.key.system or not group.key.body:
+        return None, "System and Body are required on every route stage"
+    if any(source.body_key != group.key for source in all_sources):
+        return None, "route spans multiple System/Body groups"
+    if len(geographic) != len(all_sources):
+        missing = len(all_sources) - len(geographic)
+        return None, f"{missing} route stage{'s are' if missing != 1 else ' is'} missing valid coordinates"
+    if len(geographic) < 2:
+        return None, "at least Start and End coordinates are required"
+    total = 0.0
+    for first, second in zip(geographic, geographic[1:], strict=False):
+        total += great_circle_distance_m(
+            first.center_latitude,
+            first.center_longitude,
+            second.center_latitude,
+            second.center_longitude,
+            radius_km,
+        )
+    return total, ""
+
+
 def build_course_scene(
     project: ProjectData,
     selected_body: BodyKey | None = None,
@@ -484,6 +513,7 @@ def build_course_scene(
     radius_cache: BodyRadiusCache | None = None,
     trace: RaceTrace | None = None,
 ) -> CourseScene:
+    all_sources = _stage_sources(project)
     groups = body_groups(project)
     if not groups:
         return CourseScene(
@@ -499,7 +529,7 @@ def build_course_scene(
             "No Start, Waypoint, or End stages are available.",
         )
     group = next((item for item in groups if item.key == selected_body), groups[0])
-    sources = [source for source in _stage_sources(project) if source.body_key == group.key]
+    sources = [source for source in all_sources if source.body_key == group.key]
     radius, radius_source, radius_warning = _resolve_radius(
         sources, group, live_snapshot, radius_cache
     )
@@ -638,6 +668,9 @@ def build_course_scene(
     message = f"{len(stages)} stage{'s' if len(stages) != 1 else ''} shown"
     if skipped:
         message += f"; {len(skipped)} skipped"
+    course_distance_m, course_distance_message = _course_surface_distance(
+        all_sources, group, geographic, radius
+    )
     return CourseScene(
         SceneState.READY,
         group,
@@ -651,4 +684,6 @@ def build_course_scene(
         message,
         tuple(scene_trace_segments),
         trace_message,
+        course_distance_m,
+        course_distance_message,
     )

@@ -75,7 +75,7 @@ from .model import (
     SectionType,
     Stage,
 )
-from .parser import _entry_from_line, load_document, save_document, serialize_document
+from .parser import _entry_from_line, load_document
 from .project import (
     AltitudeMode,
     ProjectData,
@@ -84,8 +84,12 @@ from .project import (
     decimal_value,
     inferred_altitude_mode,
     inferred_maximum_altitude,
+    format_saved_at,
     load_project,
+    project_from_document,
     save_project,
+    save_project_export,
+    serialize_project_export,
 )
 from .radius import BodyRadiusCache, normalize_name
 from .theme import ThemeMode, apply_theme, semantic_color
@@ -107,7 +111,7 @@ from .validator import (
     start_vehicle_mismatch,
     validate_project,
 )
-from .widgets import CollapsibleSection, DelayedTooltipFilter
+from .widgets import CollapsibleSection, DelayedTooltipFilter, WheelSafeComboBox
 
 
 APP_NAME = "EDTT Definer"
@@ -116,9 +120,7 @@ _version_parts = __version__.removesuffix(".dev0").split(".")
 if __version__.endswith(".dev0"):
     DISPLAY_VERSION = f"{'.'.join(_version_parts)}-dev"
 else:
-    DISPLAY_VERSION = ".".join(
-        _version_parts[:2] if _version_parts[2:] == ["0"] else _version_parts
-    )
+    DISPLAY_VERSION = ".".join(_version_parts)
 APP_DISPLAY_NAME = f"{APP_NAME} v{DISPLAY_VERSION}"
 PLAYER_STATES = [
     "Ship", "ShipFlyingStart", "ShipPass", "FighterFlyingStart", "Fighter", "SRV", "OnFoot",
@@ -137,7 +139,7 @@ VALIDATION_GROUP_KEY_ROLE = int(Qt.ItemDataRole.UserRole) + 11
 
 
 def _editable_combo(values: list[str]) -> QComboBox:
-    combo = QComboBox()
+    combo = WheelSafeComboBox()
     combo.setEditable(True)
     combo.addItems(values)
     return combo
@@ -324,7 +326,7 @@ class ConditionEditor(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.list = QListWidget()
-        self.kind = QComboBox()
+        self.kind = WheelSafeComboBox()
         self.kind.addItems([
             "Custom", "DirectionLimit", "HeadingLimit", "SupercruiseDestinationDrop",
             *sorted(self.PARAMETERLESS),
@@ -584,7 +586,7 @@ class RaceConversionDialog(QDialog):
         )
         description.setWordWrap(True)
 
-        self.target = QComboBox()
+        self.target = WheelSafeComboBox()
         for vehicle in RaceVehicle:
             self.target.addItem(vehicle.label, vehicle.value)
         event = document.event_info
@@ -798,7 +800,7 @@ class StageForm(QWidget):
         self.title = QLabel("Stage")
         self.title.setObjectName("sectionTitle")
         self.waypoint_name = QLineEdit()
-        self.waypoint_name.setPlaceholderText("Optional name used only inside EDTT Definer")
+        self.waypoint_name.setPlaceholderText("Optional stage alias used by EDTT Definer")
         self.player_state = _editable_combo(PLAYER_STATES)
         self.system = QLineEdit()
         self.body = QLineEdit()
@@ -807,7 +809,7 @@ class StageForm(QWidget):
         self.body_radius_source = QLabel("Source: —")
         self.body_radius_source.setWordWrap(True)
         self.station = QLineEdit()
-        self.position_mode = QComboBox()
+        self.position_mode = WheelSafeComboBox()
         self.position_mode.addItems(["Point", "Gate"])
         self.lat_a = QLineEdit()
         self.lon_a = QLineEdit()
@@ -818,7 +820,7 @@ class StageForm(QWidget):
         self.proximity = QLineEdit()
         self.altitude = QLineEdit()
         self.altitude_proximity = QLineEdit()
-        self.altitude_mode = QComboBox()
+        self.altitude_mode = WheelSafeComboBox()
         self.altitude_mode.addItem("No altitude restriction", AltitudeMode.NONE.value)
         self.altitude_mode.addItem("Maximum height", AltitudeMode.MAXIMUM.value)
         self.altitude_mode.addItem("Target altitude ± tolerance", AltitudeMode.TARGET.value)
@@ -891,7 +893,7 @@ class StageForm(QWidget):
         position_grid.addWidget(self.gate_distance_label, 4, 0, 1, 5)
 
         form = QFormLayout()
-        self.waypoint_name_label = QLabel("Waypoint name (editor only)")
+        self.waypoint_name_label = QLabel("Stage name (editor only)")
         form.addRow(self.waypoint_name_label, self.waypoint_name)
         form.addRow("Player state*", self.player_state)
         form.addRow("System", self.system)
@@ -1150,8 +1152,14 @@ class StageForm(QWidget):
         is_start = section.section_type is SectionType.START
         is_waypoint = section.section_type is SectionType.WAYPOINT
         is_end = section.section_type is SectionType.END
-        self.waypoint_name.setVisible(is_waypoint)
-        self.waypoint_name_label.setVisible(is_waypoint)
+        if is_start:
+            self.waypoint_name_label.setText("Start name (editor only)")
+        elif is_end:
+            self.waypoint_name_label.setText("End name (editor only)")
+        else:
+            self.waypoint_name_label.setText("Waypoint name (editor only)")
+        self.waypoint_name.setVisible(True)
+        self.waypoint_name_label.setVisible(True)
         self.start_orientation_box.setVisible(is_start)
         self.start_instructions_box.setVisible(is_start)
         self.next_instructions_box.setVisible(is_start or is_waypoint)
@@ -1334,9 +1342,7 @@ class StageForm(QWidget):
 
     def metadata_snapshot(self) -> StageMetadata:
         return StageMetadata(
-            display_name=self.waypoint_name.text().strip()
-            if self.section and self.section.section_type is SectionType.WAYPOINT
-            else "",
+            display_name=self.waypoint_name.text().strip(),
             altitude_mode=self.current_altitude_mode(),
             maximum_altitude=self.maximum_altitude.text().strip(),
             altitude_locked=self.altitude_locked.isChecked(),
@@ -1561,6 +1567,17 @@ class MainWindow(QMainWindow):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(QLabel("Race structure"))
+        self.project_version_label = QLabel("Time trial not saved yet")
+        self.project_version_label.setWordWrap(True)
+        self.project_version_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        set_help_text(
+            self.project_version_label,
+            "The editable time trial's saved revision. Every successful project Save or "
+            "Save As creates the next version; creating an EDCoPilot TXT does not.",
+        )
+        left_layout.addWidget(self.project_version_label)
         self.navigation = QListWidget()
         self.navigation.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
@@ -1808,17 +1825,18 @@ class MainWindow(QMainWindow):
         route_section_owner: str | None = None
         for section in self.project.document.sections():
             kind = section.section_type
+            metadata = self.project.stage_metadata.get(
+                section.node_id, StageMetadata()
+            )
+            name = metadata.display_name.strip()
             if kind is SectionType.EVENTINFO:
                 label = "Event Info"
             elif kind is SectionType.START:
-                label = "Start"
+                label = "Start" + (f" — {name}" if name else "")
             elif kind is SectionType.END:
-                label = "End"
+                label = "End" + (f" — {name}" if name else "")
             elif kind is SectionType.WAYPOINT:
                 waypoint_number += 1
-                metadata = self.project.stage_metadata.get(
-                    section.node_id, StageMetadata()
-                )
                 separator = metadata.separator_before.strip()
                 if separator:
                     route_section_owner = section.node_id
@@ -1845,7 +1863,6 @@ class MainWindow(QMainWindow):
                     self.navigation.addItem(divider)
                     if section.node_id == select_divider_for:
                         selected_divider_row = self.navigation.count() - 1
-                name = metadata.display_name.strip()
                 label = f"Waypoint {waypoint_number}"
                 if name:
                     label += f" — {name}"
@@ -2000,7 +2017,11 @@ class MainWindow(QMainWindow):
     def _stage_metadata_changed(self) -> None:
         self._sync_current_stage_metadata()
         section = self.project.document.section_by_id(self.current_section_id or "")
-        if section and section.section_type is SectionType.WAYPOINT:
+        if section and section.section_type in {
+            SectionType.START,
+            SectionType.WAYPOINT,
+            SectionType.END,
+        }:
             item = next(
                 (
                     self.navigation.item(row)
@@ -2011,15 +2032,21 @@ class MainWindow(QMainWindow):
                 None,
             )
             if item:
-                waypoint_number = next(
-                    index
-                    for index, waypoint in enumerate(
-                        self.project.document.waypoints, start=1
-                    )
-                    if waypoint.section.node_id == section.node_id
-                )
                 name = self.project.stage_metadata[section.node_id].display_name.strip()
-                label = f"Waypoint {waypoint_number}" + (f" — {name}" if name else "")
+                if section.section_type is SectionType.WAYPOINT:
+                    waypoint_number = next(
+                        index
+                        for index, waypoint in enumerate(
+                            self.project.document.waypoints, start=1
+                        )
+                        if waypoint.section.node_id == section.node_id
+                    )
+                    base = f"Waypoint {waypoint_number}"
+                elif section.section_type is SectionType.START:
+                    base = "Start"
+                else:
+                    base = "End"
+                label = base + (f" — {name}" if name else "")
                 item.setText(label)
                 self.stage_form.title.setText(label)
         self.dirty = True
@@ -2048,7 +2075,16 @@ class MainWindow(QMainWindow):
             else:
                 for issue in group:
                     self._add_validation_issue_item(issue)
-        self.preview.setPlainText(serialize_document(self.project.document))
+        self.preview.setPlainText(
+            serialize_project_export(
+                self.project,
+                pending_save=(
+                    self.dirty
+                    or self.project_path is None
+                    or self.project.time_trial_version <= 0
+                ),
+            )
+        )
         if hasattr(self, "course_view"):
             self.course_view.refresh_project(
                 self.project, selected_section_id=self.current_section_id
@@ -2237,6 +2273,17 @@ class MainWindow(QMainWindow):
         name = self.project_path.name if self.project_path else "Untitled"
         marker = "*" if self.dirty else ""
         self.setWindowTitle(f"{marker}{name} — {APP_DISPLAY_NAME}")
+        if hasattr(self, "project_version_label"):
+            if self.project.time_trial_version <= 0 or not self.project.last_saved_at:
+                version_text = "Time trial not saved yet"
+            else:
+                version_text = (
+                    f"Time-trial version {self.project.time_trial_version} · Last saved "
+                    f"{format_saved_at(self.project.last_saved_at)}"
+                )
+            if self.dirty:
+                version_text += " · unsaved changes"
+            self.project_version_label.setText(version_text)
         if hasattr(self, "course_window") and self.course_window is not None:
             self.course_window.setWindowTitle(
                 f"{name} — EDTT Definer Course view"
@@ -2582,7 +2629,9 @@ class MainWindow(QMainWindow):
                 project = load_project(source)
                 project_path = source
             else:
-                project = ProjectData(document=load_document(source), last_export_path=str(source))
+                project = project_from_document(
+                    load_document(source), last_export_path=str(source)
+                )
                 project_path = None
             self._set_project(project, project_path, dirty=False)
             self._add_recent(source)
@@ -2596,6 +2645,7 @@ class MainWindow(QMainWindow):
             save_project(self.project, self.project_path)
             self.dirty = False
             self._update_title()
+            self.refresh_validation_and_preview()
             self._add_recent(self.project_path)
             self.statusBar().showMessage(
                 "Editable JSON project saved. Use 'Create EDCoPilot TXT' for the file imported by EDCoPilot.",
@@ -2617,7 +2667,37 @@ class MainWindow(QMainWindow):
             return False
         if not path.lower().endswith(".edttc.json"):
             path += ".edttc.json"
+        previous_path = self.project_path
         self.project_path = Path(path)
+        if self.save_project():
+            return True
+        self.project_path = previous_path
+        self._update_title()
+        return False
+
+    def _save_before_export(self) -> bool:
+        if (
+            not self.dirty
+            and self.project_path is not None
+            and self.project.time_trial_version > 0
+            and self.project.last_saved_at
+        ):
+            return True
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Information)
+        message.setWindowTitle("Save project before export")
+        message.setText("Save the editable time-trial project before creating the EDCoPilot TXT.")
+        message.setInformativeText(
+            "This assigns the next time-trial version and timestamp so the TXT can be "
+            "matched to the saved project."
+        )
+        save_button = message.addButton("Save and export", QMessageBox.ButtonRole.AcceptRole)
+        cancel_button = message.addButton(QMessageBox.StandardButton.Cancel)
+        message.setDefaultButton(cancel_button)
+        message.setEscapeButton(cancel_button)
+        message.exec()
+        if message.clickedButton() is not save_button:
+            return False
         return self.save_project()
 
     def export_file(self) -> None:
@@ -2632,7 +2712,11 @@ class MainWindow(QMainWindow):
         mismatch = start_vehicle_mismatch(self.project.document)
         if mismatch is not None and not self._confirm_vehicle_mismatch_export(mismatch):
             return
-        initial = self.project.last_export_path or ""
+        if not self._save_before_export():
+            return
+        initial = self.settings.value(
+            "export/last_path", self.project.last_export_path or "", str
+        )
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Create EDCoPilot import TXT",
@@ -2644,10 +2728,8 @@ class MainWindow(QMainWindow):
         if not path.lower().endswith(".export.txt"):
             path += ".export.txt"
         try:
-            save_document(self.project.document, path)
-            self.project.last_export_path = path
-            self.dirty = True
-            self._update_title()
+            save_project_export(self.project, path)
+            self.settings.setValue("export/last_path", path)
             self.statusBar().showMessage(f"Exported {path}", 8000)
             QMessageBox.information(
                 self,

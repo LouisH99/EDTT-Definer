@@ -2,7 +2,7 @@
 
 **An unofficial time-trial editor for EDCoPilot.**
 
-EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.6.7**.
+EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot time-trial definition files. The current release is **v0.7.0**.
 
 > **AI development disclosure:** This project was “vibe-coded” with OpenAI Codex. The project owner supplied the idea, requirements, EDCoPilot examples, testing feedback, and release decisions. Codex generated and revised most of the source code, automated tests, and documentation. The resulting application has been tested, but—as with any software, especially AI-generated software—it may still contain mistakes. See [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md) for the full disclosure.
 
@@ -18,7 +18,7 @@ EDTT Definer is a native Windows editor for creating and maintaining EDCoPilot t
 
 ### Prebuilt Windows release
 
-Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.6.7.exe` from its **Assets** section, and run it. No installation is required.
+Open the [latest GitHub release](https://github.com/LouisH99/EDTT-Definer/releases/latest), download `EDTT-Definer-v0.7.0.exe` from its **Assets** section, and run it. No installation is required.
 
 The executable is not code-signed, so Windows SmartScreen may show its normal warning on first launch.
 
@@ -49,15 +49,15 @@ Python 3.13 is required. Using a virtual environment is recommended because it k
 2. Complete Event Info, Start, any intermediate Waypoints, and End.
 3. Add, duplicate, delete, or reorder waypoints from the left pane. Hold **Ctrl** to select separate waypoints or **Shift** to select a range, then duplicate, delete, or move the complete group together.
 4. When Elite Dangerous is reporting surface coordinates, use **Capture into selected** or **Capture + add waypoint**.
-5. Optionally save incomplete work with **Save Editable Project (.json)**. This file is only for reopening in the editor.
-6. Resolve all red validation errors and choose **Create EDCoPilot TXT**.
+5. Save the editable work with **Save Editable Project (.json)**. Each successful save creates the next time-trial version.
+6. Resolve all red validation errors and choose **Create EDCoPilot TXT**. If the project changed, EDTT Definer asks you to save it first so the export matches a saved version.
 7. Import the resulting `*.export.txt` through EDCoPilot's Time Trials page.
 
 A new race starts with Waypoint 1 for convenience. Intermediate waypoints are optional: delete the final waypoint to create a direct Start-to-End race, or use **Add** later to restore Waypoint 1.
 
 ### Lap/section dividers and reverse laps
 
-Use **Section…** to place an editor-only named divider immediately before the active waypoint, for example `Lap 2` or `Canyon section`. Double-click a divider to collapse or expand all of its waypoints. Collapsing is a temporary view choice and never changes the project or EDCoPilot TXT. Select a divider and use **Section…** to rename it, or use **Delete section** to remove only the divider.
+Use **Section…** to place an editor-only named divider immediately before the active waypoint, for example `Lap 2` or `Canyon section`. Double-click a divider to collapse or expand all of its waypoints. Collapsing is a temporary view choice and never changes the project or EDCoPilot fields. Section names can appear only as context in generated `EDTTD` waypoint-name comments. Select a divider and use **Section…** to rename it, or use **Delete section** to remove only the divider.
 
 When a divider is selected, **Duplicate** changes to **Duplicate section**. It copies every waypoint from that divider up to the next divider and places the complete copy immediately after the original. Numbered labels advance to the next unused number, so duplicating `Lap 1` when `Lap 2` already exists produces `Lap 3`.
 
@@ -102,6 +102,8 @@ Speed is derived from great-circle surface distance, altitude change, and elapse
 
 Courses are grouped by normalized System and Body. Use the **Body** selector when a definition spans more than one body; choosing a section in the editor automatically selects its body. The visualizer uses the first valid project `BodyRadius` in route order, followed by matching live or locally cached data. Conflicting project radii produce a warning. Without an accurate radius, the view waits instead of inventing a planetary scale.
 
+For a complete single-body route, Course view shows an accurate checkpoint-to-checkpoint surface distance from Start through every waypoint to End. Gate checkpoints use their spherical midpoint. Altitude and the driver's actual chosen path are intentionally excluded, so this is a course-definition distance rather than a recorded racing-line distance.
+
 The default view is automatically fitted and looks down at the course from a 45-degree angle, with North toward the top and East to the right. This deterministic overview is restored when a project is opened or a different body is selected. Enable **Follow ship** to track the matching live position at the same 45-degree tilt; with **Lock center at 0 m**, the ground directly below the vehicle stays centered, while disabling the lock centers the vehicle itself. The camera rotates with live heading so the vehicle initially points toward the top of the view. While following, left-drag freely changes the heading-relative camera angle without releasing the ship, and Shift + left-drag changes roll. Click **Follow ship** again to rotate the following camera another 90 degrees around the vehicle, cycling through side, rear, and opposite-side views. Follow mode waits safely if matching coordinates are temporarily unavailable. Zoom remains available while following; right- or middle-drag panning, **Top**, or **Fit** turns following off.
 
 Drag with the left mouse button to orbit from directly above, through a side view, to directly below the course. Horizontal mouse orbit uses the same direction as EDTT Definer v0.6.6. Normal orbit stops at the two vertical poles instead of crossing them and flipping the scene, horizontal yaw still reaches every side, and positive altitude remains above ground throughout. Hold **Shift** while left-dragging to roll the camera intentionally. Press **R** to restore upright roll or **Shift + R** to turn the view 180 degrees; only explicit roll can turn altitude upside down. Drag with the right or middle button to pan and use the mouse wheel to zoom. Double-click Start, a waypoint, or End to select it and center the camera on that checkpoint. **Lock center at 0 m** is enabled by default and constrains the camera pivot to the ground plane: panning moves that pivot across the surface while its altitude remains exactly zero, even in a rolled or side-on view. Up/down movement is gradually reduced as the view becomes more horizontal, preventing large surface-distance jumps near a side view. Disable the lock to pivot and pan at checkpoint altitude. **Top** restores the fitted straight-down overview and clears camera roll, while **Fit** frames all visible route geometry without changing the current angle. The distance scale and altitude geometry use the same physical metre scale without vertical exaggeration.
@@ -128,15 +130,27 @@ EDTT Definer checks the public GitHub Releases API shortly after startup so it c
 
 Startup connection failures are silent. Manual checks report connection, response, and GitHub rate-limit errors. A skipped version remains hidden during automatic checks but is still reported by a manual check.
 
-### Waypoint names and altitude rules
+### Stage aliases, time-trial versions, and altitude rules
 
-Waypoints can have optional editor-only names, displayed as labels such as `Waypoint 3 — Canyon Gate`. Names are stored in the editable `*.edttc.json` project and are not written to EDCoPilot TXT files.
+Start, Waypoints, and End can have optional editor aliases, displayed as labels such as `Start — Crater Entrance` or `Waypoint 3 — Canyon Gate`. Aliases are stored in the editable `*.edttc.json` project and included in EDCoPilot TXT exports only as standalone namespaced comments:
+
+```text
+[waypoint]
+<!-- EDTTD: (Round 1) WP1 — Canyon Entrance -->
+PlayerState=SRV
+```
+
+Every waypoint receives a numbered comment so it can be matched to the editor. An unnamed waypoint is exported as `<!-- EDTTD: WP1 -->`; section context and an alias are added when available. EDTT Definer restores aliases when one of its exported TXT files is reopened. The comments do not add or replace EDCoPilot fields.
+
+The top of the Race structure pane shows the time-trial version and last-saved time. Every successful Save or Save As increments the version, including an unchanged save; exporting never increments it. New exports include the saved version and timestamp in an `EDTTD` comment after `[event]`. Creating an export never marks the editable project as changed.
 
 Each stage offers three altitude modes: no restriction, a maximum height, or a target altitude with a tolerance. Maximum height is an authoring shortcut: a maximum of `500` metres is exported as `Altitude=250` and `AltitudeProximity=250`, representing the permitted range from zero through 500 metres. Maximum-height values are always manual and are never replaced by live capture.
 
 New races start with `MaxShipSize=N/A`. Their initial stages and newly added waypoints start in Maximum height mode with altitude locking enabled; enter the intended maximum before exporting, or select a different altitude mode.
 
 When a waypoint uses Maximum height, the next waypoint added after it inherits the same maximum. Changing that new waypoint's maximum changes what the following waypoint inherits. Target and No restriction modes are not converted into inherited maximums.
+
+Closed selection lists ignore the mouse wheel, allowing the surrounding form to scroll without accidentally changing Race Type, altitude mode, PlayerState, or another choice. Open lists and keyboard selection continue to work normally.
 
 ### Calculated gates from live heading
 
@@ -195,7 +209,7 @@ The project repository is [LouisH99/EDTT-Definer](https://github.com/LouisH99/ED
 
 ## Files
 
-- `*.edttc.json` is the versioned, editable project format. Do not import it into EDCoPilot.
+- `*.edttc.json` is the schema-v4, versioned editable project format. Older project schemas load automatically. Do not import it into EDCoPilot.
 - `*.export.txt` is the validated plain-text EDCoPilot import format.
 - `*.edtttrace.json` is the independent, exact race-line recording format.
 - `*.csv` race-line files use the EDCoPilot/RaceViz trace syntax and can be exchanged with compatible visualization tools.

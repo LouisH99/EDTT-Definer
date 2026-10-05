@@ -52,15 +52,18 @@ def scene_project() -> ProjectData:
 
 def test_scene_builds_complete_route_and_true_altitude_shapes() -> None:
     project = scene_project()
+    project.stage_metadata[project.document.start.section.node_id].display_name = "Launch"
+    project.stage_metadata[project.document.end.section.node_id].display_name = "Finish"
 
     scene = build_course_scene(project)
 
     assert scene.state is SceneState.READY
     assert scene.radius_km == Decimal("5411.771")
-    assert scene.radius_source == "Project (Start)"
+    assert scene.radius_source == "Project (Start — Launch)"
     assert len(scene.stages) == 3
     assert len(scene.route_segments) == 2
     start, gate, end = scene.stages
+    assert start.label == "Start — Launch"
     assert start.proximity_m == 100
     assert start.altitude_bounds is not None
     assert (start.altitude_bounds.minimum_m, start.altitude_bounds.maximum_m) == (0, 500)
@@ -69,6 +72,9 @@ def test_scene_builds_complete_route_and_true_altitude_shapes() -> None:
     assert gate.altitude_bounds is not None
     assert (gate.altitude_bounds.minimum_m, gate.altitude_bounds.maximum_m) == (250, 350)
     assert end.altitude_bounds is None
+    assert end.label == "End — Finish"
+    assert scene.course_distance_m == pytest.approx(1889.2, rel=0.002)
+    assert scene.course_distance_message == ""
     gate_width = math.hypot(
         gate.endpoint_b.east_m - gate.endpoint_a.east_m,
         gate.endpoint_b.north_m - gate.endpoint_a.north_m,
@@ -130,6 +136,22 @@ def test_body_groups_are_separate_and_keep_global_waypoint_labels() -> None:
     assert other.label.endswith("(1 stage)")
     assert [stage.label for stage in scene.stages] == ["Waypoint 2 — Remote"]
     assert scene.route_segments == ()
+    assert scene.course_distance_m is None
+    assert "multiple" in scene.course_distance_message
+
+
+def test_course_distance_requires_every_route_coordinate_and_supports_start_to_end() -> None:
+    project = scene_project()
+    waypoint = project.document.waypoints[0].section
+    assert project.document.remove_waypoint(waypoint.node_id)
+
+    direct = build_course_scene(project)
+
+    assert direct.course_distance_m == pytest.approx(1889.2, rel=0.002)
+    project.document.end.section.set_value("Position", "")
+    incomplete = build_course_scene(project)
+    assert incomplete.course_distance_m is None
+    assert "missing valid coordinates" in incomplete.course_distance_message
 
 
 def test_radius_precedence_conflict_live_and_cache_fallbacks() -> None:

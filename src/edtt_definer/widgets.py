@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QSizePolicy,
     QToolButton,
@@ -10,6 +11,16 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+class WheelSafeComboBox(QComboBox):
+    """A combo box that does not steal wheel scrolling while closed."""
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        if self.view().isVisible():
+            super().wheelEvent(event)
+            return
+        event.ignore()
 
 
 class CollapsibleSection(QWidget):

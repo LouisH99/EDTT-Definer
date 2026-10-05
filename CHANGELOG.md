@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.0 — 2026-10-02
+
+- Add optional aliases to Start and End alongside waypoint names, and show them consistently in the race structure and Course view.
+- Export standalone `EDTTD` comments directly after stage headers. Every waypoint includes its `WPxx` number, while available lap/section context and aliases are included and recovered when reopening the TXT.
+- Add persistent time-trial versions and last-saved timestamps using editable-project schema version 4, with automatic migration from schemas 1–3.
+- Require unsaved projects to be saved before export, include the saved version in the generated TXT, and stop successful exports from marking projects dirty.
+- Show accurate single-body checkpoint-to-checkpoint surface distance in Course view, using spherical gate midpoints and the resolved BodyRadius, rounded to three decimal places in kilometres.
+- Prevent closed selection lists from changing under the mouse wheel while preserving normal form scrolling, open-list navigation, and keyboard controls.
+
 ## v0.6.7 — 2026-09-18
 
 - Replace the two-angle course camera with a world-up turntable orientation so normal orbiting keeps positive altitude above ground from either side and from below the surface, stopping at the vertical poles instead of flipping the scene.

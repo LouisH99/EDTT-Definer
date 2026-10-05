@@ -42,8 +42,9 @@ HELP_TEXT = {
         "Example: NoHullRepair. Unknown values are preserved for compatibility."
     ),
     "waypoint_name": (
-        "Purpose: optional name used only in EDTT Definer's race list. It is saved in the editable project "
-        "and never exported to EDCoPilot. Example: Canyon Gate."
+        "Purpose: optional editor alias for Start, a waypoint, or End. It is saved in the editable project, "
+        "shown in the race list and Course view, and exported as a namespaced EDTTD comment that EDCoPilot "
+        "can ignore. Example: Canyon Entrance."
     ),
     "player_state": (
         "Purpose: in-game state EDCoPilot requires when this stage is completed. Values: Ship means the ship must "
@@ -195,7 +196,10 @@ HELP_TEXT = {
         "row showing the affected waypoint count; double-click the group to reveal each waypoint. Double-click an "
         "individual issue or waypoint row to select its section and reveal the form area containing the problem."
     ),
-    "preview": "Read-only preview of the exact EDCoPilot TXT that Create EDCoPilot TXT will write.",
+    "preview": (
+        "Read-only preview of the EDCoPilot TXT. Current aliases appear as EDTTD comments; while changes "
+        "are unsaved, the version comment is marked pending until Save assigns the next version and timestamp."
+    ),
     "course_body": (
         "Choose which System and Body to display. Stages on different bodies cannot share one accurate "
         "coordinate space, so the course view shows one body group at a time."
@@ -260,7 +264,10 @@ HELP_TEXT = {
     "trace_status": "Shows trace recording state, point/segment count, live-data waits, and unsaved status.",
     "action_new": "Create a new blank time-trial project after confirming any unsaved changes.",
     "action_open": "Open an editable EDTT project or an existing EDCoPilot TXT definition.",
-    "action_save": "Save the editable project, including editor-only names and capture metadata.",
+    "action_save": (
+        "Save the editable project, including aliases and capture metadata, and assign the next "
+        "time-trial version and timestamp."
+    ),
     "action_save_as": "Save a separate editable *.edttc.json project file.",
     "action_export": (
         "Validate and create the plain-text *.export.txt file imported by EDCoPilot. A RaceType mismatch "

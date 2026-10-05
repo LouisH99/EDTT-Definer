@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from edtt_definer.model import Position, SectionType
 from edtt_definer.parser import load_document, parse_text, save_document, serialize_document
@@ -12,6 +15,8 @@ from edtt_definer.project import (
     apply_maximum_altitude,
     inferred_altitude_mode,
     inferred_maximum_altitude,
+    project_from_document,
+    serialize_project_export,
     load_project,
     save_project,
 )
@@ -153,7 +158,9 @@ def test_project_round_trip_preserves_ast_and_metadata(tmp_path: Path) -> None:
     )
     path = tmp_path / "race.edttc.json"
     save_project(project, path)
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 3
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 4
+    assert payload["time_trial_version"] == 1
     loaded = load_project(path)
     assert serialize_document(loaded.document) == SAMPLE
     assert loaded.capture_metadata["abc"]["heading"] == "90"
@@ -163,6 +170,8 @@ def test_project_round_trip_preserves_ast_and_metadata(tmp_path: Path) -> None:
     assert loaded.stage_metadata[waypoint_id].maximum_altitude == "500"
     assert loaded.stage_metadata[waypoint_id].altitude_locked
     assert loaded.stage_metadata[waypoint_id].separator_before == "Lap 1"
+    assert loaded.time_trial_version == 1
+    assert loaded.last_saved_at is not None
 
 
 def test_version_one_project_migrates_with_altitude_locked(tmp_path: Path) -> None:
@@ -195,6 +204,133 @@ def test_version_two_project_migrates_without_separator_metadata(tmp_path: Path)
 
     assert loaded.stage_metadata[waypoint.node_id].display_name == "Legacy"
     assert loaded.stage_metadata[waypoint.node_id].separator_before == ""
+    assert loaded.time_trial_version == 0
+    assert loaded.last_saved_at is None
+
+
+def test_version_three_project_migrates_without_revision_metadata(tmp_path: Path) -> None:
+    project = ProjectData(parse_text(SAMPLE))
+    payload = project.to_dict()
+    payload["schema_version"] = 3
+    payload.pop("time_trial_version")
+    payload.pop("last_saved_at")
+    path = tmp_path / "version-three.edttc.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_project(path)
+
+    assert loaded.time_trial_version == 0
+    assert loaded.last_saved_at is None
+
+
+def test_each_successful_project_save_increments_revision(tmp_path: Path) -> None:
+    project = ProjectData.new()
+    path = tmp_path / "revision.edttc.json"
+
+    save_project(
+        project,
+        path,
+        saved_at=datetime(2026, 9, 25, 9, 23, 32, tzinfo=timezone.utc),
+    )
+    assert project.time_trial_version == 1
+    assert project.last_saved_at == "2026-09-25T09:23:32Z"
+
+    save_project(
+        project,
+        path,
+        saved_at=datetime(2026, 9, 25, 9, 24, 0, tzinfo=timezone.utc),
+    )
+    assert project.time_trial_version == 2
+    assert load_project(path).time_trial_version == 2
+
+
+def test_failed_project_save_does_not_increment_revision(monkeypatch, tmp_path: Path) -> None:
+    project = ProjectData.new()
+
+    def fail_write(_path, _payload) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("edtt_definer.project.atomic_write", fail_write)
+    with pytest.raises(OSError, match="disk full"):
+        save_project(project, tmp_path / "failed.edttc.json")
+
+    assert project.time_trial_version == 0
+    assert project.last_saved_at is None
+
+
+def test_export_projection_adds_and_recovers_edttd_metadata_without_mutating_ast(
+    tmp_path: Path,
+) -> None:
+    project = project_from_document(parse_text(WRAPPED_SAMPLE))
+    start = project.document.start.section
+    waypoint = project.document.add_waypoint("SRV")
+    waypoint.set_value("System", "Sol")
+    waypoint.set_value("Body", "Earth")
+    waypoint.set_value("Position", "1.05,2.05")
+    waypoint.set_value("Proximity", "50")
+    unnamed_waypoint = project.document.add_waypoint("SRV")
+    unnamed_waypoint.set_value("System", "Sol")
+    unnamed_waypoint.set_value("Body", "Earth")
+    unnamed_waypoint.set_value("Position", "1.10,2.10")
+    unnamed_waypoint.set_value("Proximity", "50")
+    end = project.document.end.section
+    project.metadata_for(start.node_id).display_name = "Crater Entrance"
+    project.metadata_for(waypoint.node_id).display_name = "Canyon Entrance"
+    project.metadata_for(waypoint.node_id).separator_before = "Round 1"
+    project.metadata_for(end.node_id).display_name = "Crater Finish"
+    original = serialize_document(project.document)
+    save_project(
+        project,
+        tmp_path / "race.edttc.json",
+        saved_at=datetime(2026, 9, 25, 9, 23, 32, tzinfo=timezone.utc),
+    )
+
+    exported = serialize_project_export(project)
+
+    assert serialize_document(project.document) == original
+    assert "[event]\r\n<!-- EDTTD: Time-trial version 1 — Last saved " in exported
+    assert (
+        "[start]\r\n<!-- EDTTD: Start — Crater Entrance -->\r\nPlayerState=SRV"
+        in exported
+    )
+    assert (
+        "[waypoint]\r\n<!-- EDTTD: (Round 1) WP1 — Canyon Entrance -->\r\n"
+        "PlayerState=SRV"
+        in exported
+    )
+    assert (
+        "[waypoint]\r\n<!-- EDTTD: (Round 1) WP2 -->\r\nPlayerState=SRV"
+        in exported
+    )
+    assert (
+        "[end]\r\n<!-- EDTTD: End — Crater Finish -->\r\nPlayerState=SRV"
+        in exported
+    )
+
+    restored = project_from_document(parse_text(exported))
+    assert restored.time_trial_version == 1
+    assert restored.last_saved_at == "2026-09-25T09:23:32Z"
+    assert restored.metadata_for(restored.document.start.section.node_id).display_name == "Crater Entrance"
+    assert (
+        restored.metadata_for(restored.document.waypoints[0].section.node_id).display_name
+        == "Canyon Entrance"
+    )
+    assert restored.metadata_for(
+        restored.document.waypoints[1].section.node_id
+    ).display_name == ""
+    assert restored.metadata_for(
+        restored.document.waypoints[1].section.node_id
+    ).separator_before == ""
+    assert restored.metadata_for(restored.document.end.section.node_id).display_name == "Crater Finish"
+    assert serialize_project_export(restored) == exported
+
+
+def test_export_preview_marks_revision_as_pending_until_saved() -> None:
+    project = ProjectData.new()
+
+    preview = serialize_project_export(project, pending_save=True)
+
+    assert "EDTTD: Unsaved changes — next time-trial version 1" in preview
 
 
 def test_maximum_altitude_helpers_preserve_decimal_values() -> None:
