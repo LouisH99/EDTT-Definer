@@ -1,25 +1,35 @@
 from __future__ import annotations
 
 import math
+import base64
+import binascii
 from dataclasses import replace
+from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QKeyEvent,
     QMouseEvent,
+    QImage,
+    QImageReader,
     QPainter,
     QPen,
     QPolygonF,
+    QTransform,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSlider,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -35,11 +45,13 @@ from .course_scene import (
     body_groups,
     body_key_for_section,
     build_course_scene,
+    project_coordinate,
+    unproject_coordinate,
 )
 from .help_text import set_help, set_help_text
 from .live import LocationSnapshot
 from .model import SectionType
-from .project import ProjectData
+from .project import CourseMap, ProjectData
 from .radius import BodyRadiusCache
 from .theme import is_dark_theme, semantic_color
 from .trace import RaceTrace, TraceState
@@ -118,10 +130,15 @@ class CourseCanvas(QWidget):
     hovered_stage_changed = Signal(object)
     follow_live_changed = Signal(bool)
     follow_view_changed = Signal()
+    map_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.scene = build_course_scene(ProjectData.new())
+        self.course_map: CourseMap | None = None
+        self._map_image = QImage()
+        self._map_drag_index: int | None = None
+        self._map_drag_changed = False
         self.selected_section_id: str | None = None
         self.hovered_section_id: str | None = None
         self._yaw_degrees = DEFAULT_OVERVIEW_YAW_DEGREES
@@ -176,6 +193,166 @@ class CourseCanvas(QWidget):
         elif reset_view or self._needs_fit:
             self._needs_fit = True
             self._fit_timer.start(0)
+        self.update()
+
+    @property
+    def map_editing(self) -> bool:
+        return bool(self.course_map and self.course_map.visible and not self.course_map.locked
+                    and not self._map_image.isNull() and self.scene.state is SceneState.READY)
+
+    def set_course_map(self, course_map: CourseMap | None) -> None:
+        if course_map is not self.course_map:
+            self._map_image = QImage()
+            if course_map is not None:
+                try:
+                    self._map_image.loadFromData(base64.b64decode(course_map.image_base64, validate=True))
+                except (ValueError, binascii.Error):
+                    pass
+            self._map_drag_index = None
+        self.course_map = course_map
+        if self.map_editing:
+            self.set_follow_live(False)
+        self.update()
+
+    @property
+    def map_rotation_degrees(self) -> float:
+        if self.course_map is None:
+            return 0.0
+        first, second = self.course_map.corners[:2]
+        return (math.degrees(math.atan2(first[1] - second[1], second[0] - first[0])) + 180) % 360 - 180
+
+    def rotate_map(self, degrees: float) -> None:
+        course_map = self.course_map
+        if not self.map_editing or course_map is None or not math.isfinite(degrees):
+            return
+        degrees = (degrees + 180) % 360 - 180
+        if abs(degrees) < 1e-8:
+            return
+        center_east = sum(point[0] for point in course_map.corners) / 4
+        center_north = sum(point[1] for point in course_map.corners) / 4
+        cosine = math.cos(math.radians(degrees))
+        sine = math.sin(math.radians(degrees))
+        course_map.corners = [
+            (center_east + (east - center_east) * cosine + (north - center_north) * sine,
+             center_north - (east - center_east) * sine + (north - center_north) * cosine)
+            for east, north in course_map.corners
+        ]
+        self.update()
+        self.map_changed.emit()
+
+    def scale_map(self, factor: float) -> None:
+        course_map = self.course_map
+        if (not self.map_editing or course_map is None or not math.isfinite(factor)
+                or factor <= 0 or abs(factor - 1) < 1e-8):
+            return
+        center_east = sum(point[0] for point in course_map.corners) / 4
+        center_north = sum(point[1] for point in course_map.corners) / 4
+        corners = [(center_east + (east - center_east) * factor,
+                    center_north + (north - center_north) * factor)
+                   for east, north in course_map.corners]
+        scale_factor = course_map.scale_factor * factor
+        if not math.isfinite(scale_factor) or not all(math.isfinite(value) for point in corners for value in point):
+            return
+        course_map.corners = corners
+        course_map.scale_factor = scale_factor
+        self.update()
+        self.map_changed.emit()
+
+    def map_world_corners(self) -> list[Point3D]:
+        course_map = self.course_map
+        reference = self.scene.reference_coordinate
+        radius = self.scene.radius_km
+        if course_map is None or reference is None or radius is None:
+            return []
+        return [
+            project_coordinate(
+                *unproject_coordinate(east, north, course_map.reference_latitude,
+                                      course_map.reference_longitude, radius),
+                *reference, radius,
+            )
+            for east, north in course_map.corners
+        ]
+
+    def _map_polygon(self) -> QPolygonF:
+        return QPolygonF([self.world_to_screen(point) for point in self.map_world_corners()])
+
+    @staticmethod
+    def _valid_map_polygon(polygon: QPolygonF) -> bool:
+        if len(polygon) != 4:
+            return False
+        crosses = []
+        for index in range(4):
+            first = polygon[(index + 1) % 4] - polygon[index]
+            second = polygon[(index + 2) % 4] - polygon[(index + 1) % 4]
+            crosses.append(first.x() * second.y() - first.y() * second.x())
+        return all(value > 1e-4 for value in crosses) or all(value < -1e-4 for value in crosses)
+
+    def _draw_map(self, painter: QPainter) -> None:
+        course_map = self.course_map
+        if course_map is None or not course_map.visible or self._map_image.isNull():
+            return
+        polygon = self._map_polygon()
+        if not self._valid_map_polygon(polygon):
+            return
+        source = QPolygonF([
+            QPointF(0, 0), QPointF(self._map_image.width(), 0),
+            QPointF(self._map_image.width(), self._map_image.height()),
+            QPointF(0, self._map_image.height()),
+        ])
+        transform = QTransform()
+        if not QTransform.quadToQuad(source, polygon, transform):
+            return
+        painter.save()
+        painter.setOpacity(course_map.opacity)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.setTransform(transform)
+        painter.drawImage(QPointF(), self._map_image)
+        painter.restore()
+
+    def _draw_map_handles(self, painter: QPainter) -> None:
+        if not self.map_editing:
+            return
+        polygon = self._map_polygon()
+        painter.save()
+        painter.setPen(QPen(QColor("#ffffff"), 2, Qt.PenStyle.DashLine))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPolygon(polygon)
+        painter.setPen(QPen(QColor("#171717"), 2))
+        painter.setBrush(QColor("#ffffff"))
+        for point in polygon:
+            painter.drawRect(QRectF(point.x() - 6, point.y() - 6, 12, 12))
+        painter.restore()
+
+    def _drag_map(self, delta: QPointF) -> None:
+        course_map = self.course_map
+        reference = self.scene.reference_coordinate
+        radius = self.scene.radius_km
+        if course_map is None or reference is None or radius is None or self.scale <= 0:
+            return
+        right = self.camera_orientation.right
+        up = self.camera_orientation.up
+        determinant = right.east * up.north - right.north * up.east
+        if abs(determinant) < 1e-8:
+            return
+        horizontal = delta.x() / self.scale
+        vertical = -delta.y() / self.scale
+        east_delta = (horizontal * up.north - right.north * vertical) / determinant
+        north_delta = (right.east * vertical - horizontal * up.east) / determinant
+        points = self.map_world_corners()
+        for index, point in enumerate(points):
+            if self._map_drag_index == -1 or index == self._map_drag_index:
+                points[index] = Point3D(point.east_m + east_delta, point.north_m + north_delta, 0)
+        polygon = QPolygonF([QPointF(point.east_m, point.north_m) for point in points])
+        if not self._valid_map_polygon(polygon):
+            return
+        corners = []
+        for point in points:
+            latitude, longitude = unproject_coordinate(point.east_m, point.north_m, *reference, radius)
+            mapped = project_coordinate(latitude, longitude, course_map.reference_latitude,
+                                        course_map.reference_longitude, radius)
+            corners.append((mapped.east_m, mapped.north_m))
+        course_map.corners = corners
+        self._map_drag_changed = True
         self.update()
 
     def _reset_overview_orientation(self) -> None:
@@ -384,6 +561,8 @@ class CourseCanvas(QWidget):
             points.append(self.scene.live_marker.position)
         for segment in self.scene.trace_segments:
             points.extend(point.position for point in segment.points)
+        if self.course_map is not None and self.course_map.visible:
+            points.extend(self.map_world_corners())
         if not points:
             return points
         min_east = min(point.east_m for point in points)
@@ -598,6 +777,7 @@ class CourseCanvas(QWidget):
             painter.end()
             return
 
+        self._draw_map(painter)
         self._draw_grid(painter, colors)
         self._draw_trace(painter)
         route_pen = QPen(colors["route"], 2.0, Qt.PenStyle.DashLine)
@@ -617,6 +797,7 @@ class CourseCanvas(QWidget):
             self._draw_live_marker(painter, colors)
         self._draw_scale(painter, colors)
         self._draw_trace_legend(painter, colors)
+        self._draw_map_handles(painter)
         painter.end()
 
     def _draw_trace(self, painter: QPainter) -> None:
@@ -929,6 +1110,16 @@ class CourseCanvas(QWidget):
             self._last_mouse_position = event.position()
             self._pressed_button = event.button()
             self._dragged = False
+            self._map_drag_index = None
+            self._map_drag_changed = False
+            if self.map_editing and event.button() == Qt.MouseButton.LeftButton:
+                polygon = self._map_polygon()
+                for index, point in enumerate(polygon):
+                    if (point - event.position()).manhattanLength() <= 18:
+                        self._map_drag_index = index
+                        break
+                if self._map_drag_index is None and polygon.containsPoint(event.position(), Qt.FillRule.OddEvenFill):
+                    self._map_drag_index = -1
             event.accept()
             return
         super().mousePressEvent(event)
@@ -948,7 +1139,10 @@ class CourseCanvas(QWidget):
                     self.set_follow_live(False)
                 self._dragged = True
             if self._pressed_button == Qt.MouseButton.LeftButton:
-                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                if self.map_editing:
+                    if self._map_drag_index is not None:
+                        self._drag_map(delta)
+                elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                     if self.follow_live:
                         self.roll_follow_by(delta.x() * 0.45)
                     else:
@@ -980,7 +1174,7 @@ class CourseCanvas(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == self._pressed_button:
-            if event.button() == Qt.MouseButton.LeftButton and not self._dragged:
+            if event.button() == Qt.MouseButton.LeftButton and not self._dragged and self._map_drag_index is None:
                 section_id = self._stage_at(event.position())
                 if section_id:
                     self.set_selected_section(section_id)
@@ -989,6 +1183,10 @@ class CourseCanvas(QWidget):
             self._last_mouse_position = None
             self._pressed_button = Qt.MouseButton.NoButton
             self._dragged = False
+            self._map_drag_index = None
+            if self._map_drag_changed:
+                self._map_drag_changed = False
+                self.map_changed.emit()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -1043,6 +1241,9 @@ class CourseCanvas(QWidget):
         elif event.key() == Qt.Key.Key_Down:
             self.pan_by_screen(QPointF(0, -20))
         elif event.key() == Qt.Key.Key_R:
+            if self.map_editing:
+                event.accept()
+                return
             if self.follow_live:
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                     self.roll_follow_by(180.0)
@@ -1090,6 +1291,7 @@ class CourseViewPanel(QWidget):
     trace_clear_requested = Signal()
     trace_open_requested = Signal()
     trace_save_requested = Signal()
+    map_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1138,6 +1340,48 @@ class CourseViewPanel(QWidget):
         self.detail_label = QLabel("Hover over a checkpoint for details.")
         self.detail_label.setWordWrap(True)
         self.canvas = CourseCanvas()
+        self.map_import_button = QPushButton()
+        self.map_import_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
+        self.map_import_button.setAccessibleName("Import course map")
+        set_help_text(self.map_import_button, "Import or replace an overhead course image for the selected body.")
+        self.map_visible = QCheckBox("Visible")
+        self.map_locked = QCheckBox("Locked")
+        self.map_locked.setChecked(True)
+        self.map_rotation = QSlider(Qt.Orientation.Horizontal)
+        self.map_rotation.setRange(-1800, 1800)
+        self.map_rotation.setSingleStep(1)
+        self.map_rotation.setPageStep(100)
+        self.map_rotation.setMinimumWidth(80)
+        self.map_rotation.setMaximumWidth(220)
+        self.map_rotation.setAccessibleName("Map rotation")
+        set_help_text(self.map_rotation, "Rotate the unlocked image around its center without changing the camera or stretching it. Positive angles turn clockwise in the north-up view.")
+        self.map_rotation_label = QLabel("0.0 deg")
+        self.map_rotation_label.setFixedWidth(80)
+        self.map_scale = QSlider(Qt.Orientation.Horizontal)
+        self.map_scale.setRange(10, 400)
+        self.map_scale.setValue(100)
+        self.map_scale.setPageStep(10)
+        self.map_scale.setMinimumWidth(80)
+        self.map_scale.setMaximumWidth(220)
+        self.map_scale.setAccessibleName("Map scale")
+        set_help_text(self.map_scale, "Shrink or enlarge the unlocked image around its center, from 10% to 400%, without changing the camera or its proportions.")
+        self.map_scale_label = QLabel("100%")
+        self.map_scale_label.setFixedWidth(50)
+        self.map_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.map_opacity.setRange(0, 100)
+        self.map_opacity.setValue(65)
+        self.map_opacity.setMinimumWidth(60)
+        self.map_opacity.setMaximumWidth(140)
+        self.map_opacity.setAccessibleName("Map opacity")
+        self.map_opacity_label = QLabel("65%")
+        self.map_opacity_label.setFixedWidth(38)
+        self.map_remove_button = QPushButton()
+        self.map_remove_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.map_remove_button.setAccessibleName("Remove course map")
+        set_help_text(self.map_remove_button, "Remove the selected body's map from the editable project.")
+        set_help_text(self.map_visible, "Show or hide the selected body's course map.")
+        set_help_text(self.map_locked, "Unlock to rotate the image, drag corner handles to reshape it, or drag inside to move it. Top gives a straight-down alignment view. Lock to restore camera orbit and follow.")
+        set_help_text(self.map_opacity, "Opacity of the map beneath checkpoints, grid, and race lines.")
 
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 0, 0, 0)
@@ -1162,10 +1406,31 @@ class CourseViewPanel(QWidget):
         trace_controls.addStretch(1)
         trace_controls.addWidget(self.trace_open_button)
         trace_controls.addWidget(self.trace_save_button)
+        map_controls = QHBoxLayout()
+        map_controls.setContentsMargins(0, 0, 0, 0)
+        map_controls.addWidget(QLabel("Map"))
+        map_controls.addWidget(self.map_import_button)
+        map_controls.addWidget(self.map_visible)
+        map_controls.addWidget(self.map_locked)
+        map_controls.addStretch(1)
+        map_controls.addWidget(QLabel("Opacity"))
+        map_controls.addWidget(self.map_opacity)
+        map_controls.addWidget(self.map_opacity_label)
+        map_controls.addWidget(self.map_remove_button)
+        map_transform_controls = QHBoxLayout()
+        map_transform_controls.setContentsMargins(0, 0, 0, 0)
+        map_transform_controls.addWidget(QLabel("Rotation"))
+        map_transform_controls.addWidget(self.map_rotation, 1)
+        map_transform_controls.addWidget(self.map_rotation_label)
+        map_transform_controls.addWidget(QLabel("Scale"))
+        map_transform_controls.addWidget(self.map_scale, 1)
+        map_transform_controls.addWidget(self.map_scale_label)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.addLayout(controls)
         layout.addLayout(camera_controls)
+        layout.addLayout(map_controls)
+        layout.addLayout(map_transform_controls)
         layout.addLayout(trace_controls)
         layout.addWidget(self.trace_status_label)
         layout.addWidget(self.status_label)
@@ -1186,6 +1451,15 @@ class CourseViewPanel(QWidget):
         self.trace_clear_button.clicked.connect(self.trace_clear_requested)
         self.trace_open_button.clicked.connect(self.trace_open_requested)
         self.trace_save_button.clicked.connect(self.trace_save_requested)
+        self.map_import_button.clicked.connect(self._choose_map)
+        self.map_remove_button.clicked.connect(self._remove_map)
+        self.map_visible.toggled.connect(self._map_options_changed)
+        self.map_locked.toggled.connect(self._map_options_changed)
+        self.map_opacity.valueChanged.connect(self._map_options_changed)
+        self.map_rotation.valueChanged.connect(self._map_rotation_changed)
+        self.map_scale.valueChanged.connect(self._map_scale_changed)
+        self.canvas.map_changed.connect(self._sync_map_controls)
+        self.canvas.map_changed.connect(self.map_changed)
         self.canvas.stage_selected.connect(self.stage_selected)
         self.canvas.hovered_stage_changed.connect(self._hovered_stage_changed)
         self.canvas.follow_live_changed.connect(self._follow_live_changed)
@@ -1212,6 +1486,129 @@ class CourseViewPanel(QWidget):
             set_help(widget, help_key)
         self.setAccessibleName("Course view")
         self.set_trace_status(TraceState.IDLE, "No trace loaded.", False)
+        self._sync_map_controls()
+
+    def _choose_map(self) -> None:
+        path, _filter = QFileDialog.getOpenFileName(
+            self, "Import course map", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp)",
+        )
+        if not path:
+            return
+        if self.canvas.course_map is not None and QMessageBox.question(
+            self, "Replace course map", "Replace this body's image and alignment?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.import_map(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Cannot import course map", str(exc))
+
+    def import_map(self, path: str | Path) -> None:
+        scene = self.canvas.scene
+        group = scene.body_group
+        if scene.state is not SceneState.READY or group is None or scene.reference_coordinate is None:
+            raise ValueError("A course with valid coordinates and a body radius is required.")
+        if Path(path).stat().st_size > 32 * 1024 * 1024:
+            raise ValueError("Choose an image smaller than 32 MB.")
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if not size.isValid() or size.width() * size.height() > 40_000_000:
+            raise ValueError("Choose a readable image with no more than 40 million pixels.")
+        image = reader.read()
+        if image.isNull():
+            raise ValueError(f"Cannot read image: {reader.errorString()}")
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        if not image.save(buffer, "PNG"):
+            raise ValueError("Cannot embed the image in the project.")
+        buffer.close()
+        points = [stage.center for stage in scene.stages]
+        min_east = min(point.east_m for point in points)
+        max_east = max(point.east_m for point in points)
+        min_north = min(point.north_m for point in points)
+        max_north = max(point.north_m for point in points)
+        east = (min_east + max_east) / 2
+        north = (min_north + max_north) / 2
+        aspect = image.width() / image.height()
+        half_width = max((max_east - min_east) * 0.65,
+                         (max_north - min_north) * 0.65 * aspect, 50 * max(1, aspect))
+        half_height = half_width / aspect
+        course_map = CourseMap(
+            group.system_name, group.body_name,
+            base64.b64encode(bytes(data)).decode("ascii"),
+            *scene.reference_coordinate,
+            [(east - half_width, north + half_height),
+             (east + half_width, north + half_height),
+             (east + half_width, north - half_height),
+             (east - half_width, north - half_height)],
+        )
+        self.project.course_maps = [item for item in self.project.course_maps
+                                    if BodyKey.from_names(item.system, item.body) != group.key]
+        self.project.course_maps.append(course_map)
+        self.canvas.set_course_map(course_map)
+        self.canvas.fit_view()
+        self._sync_map_controls()
+        self.map_changed.emit()
+
+    def _sync_map_controls(self) -> None:
+        course_map = self.canvas.course_map
+        self.map_import_button.setEnabled(self.canvas.scene.state is SceneState.READY)
+        for widget in (self.map_visible, self.map_locked, self.map_opacity):
+            widget.blockSignals(True)
+            widget.setEnabled(course_map is not None)
+        self.map_visible.setChecked(course_map.visible if course_map else False)
+        self.map_locked.setChecked(course_map.locked if course_map else True)
+        self.map_opacity.setValue(round(course_map.opacity * 100) if course_map else 65)
+        self.map_opacity_label.setText(f"{self.map_opacity.value()}%")
+        self.map_rotation.blockSignals(True)
+        rotation = round(self.canvas.map_rotation_degrees * 10)
+        if rotation == -1800 and self.map_rotation.value() > 0:
+            rotation = 1800
+        self.map_rotation.setValue(rotation)
+        self.map_rotation_label.setText(f"{self.map_rotation.value() / 10:.1f} deg")
+        self.map_rotation.setEnabled(self.canvas.map_editing)
+        self.map_rotation.blockSignals(False)
+        self.map_scale.blockSignals(True)
+        self.map_scale.setValue(round(course_map.scale_factor * 100) if course_map else 100)
+        self.map_scale_label.setText(f"{self.map_scale.value()}%")
+        self.map_scale.setEnabled(self.canvas.map_editing)
+        self.map_scale.blockSignals(False)
+        for widget in (self.map_visible, self.map_locked, self.map_opacity):
+            widget.blockSignals(False)
+        self.map_remove_button.setEnabled(course_map is not None)
+        self.follow_button.setEnabled(not self.canvas.map_editing)
+
+    def _map_options_changed(self, _value: object = None) -> None:
+        course_map = self.canvas.course_map
+        if course_map is None:
+            return
+        course_map.visible = self.map_visible.isChecked()
+        course_map.locked = self.map_locked.isChecked()
+        course_map.opacity = self.map_opacity.value() / 100
+        self.canvas.set_course_map(course_map)
+        self._sync_map_controls()
+        self.map_changed.emit()
+
+    def _map_rotation_changed(self, value: int) -> None:
+        self.canvas.rotate_map(value / 10 - self.canvas.map_rotation_degrees)
+
+    def _map_scale_changed(self, value: int) -> None:
+        course_map = self.canvas.course_map
+        if course_map is not None:
+            self.canvas.scale_map(value / 100 / course_map.scale_factor)
+
+    def _remove_map(self) -> None:
+        course_map = self.canvas.course_map
+        if course_map is None:
+            return
+        if QMessageBox.question(self, "Remove course map", "Remove this body's image and alignment?") != QMessageBox.StandardButton.Yes:
+            return
+        self.project.course_maps.remove(course_map)
+        self.canvas.set_course_map(None)
+        self._sync_map_controls()
+        self.map_changed.emit()
 
     def _fit_overview(self) -> None:
         self.canvas.set_follow_live(False)
@@ -1363,6 +1760,10 @@ class CourseViewPanel(QWidget):
             trace=self.trace,
         )
         self.canvas.set_scene(scene, reset_view=reset_view)
+        course_map = next((item for item in self.project.course_maps
+                   if BodyKey.from_names(item.system, item.body) == self._current_body_key), None)
+        self.canvas.set_course_map(course_map)
+        self._sync_map_controls()
         self.canvas.set_selected_section(self.selected_section_id)
         self._update_status(scene)
 
@@ -1412,6 +1813,8 @@ class CourseViewPanel(QWidget):
                     reason = "a complete single-body route is required"
             self.course_distance_label.setText(f"Course distance: unavailable — {reason}")
         warnings: list[str] = []
+        if self.canvas.course_map is not None and self.canvas._map_image.isNull():
+            warnings.append("The saved course map image cannot be read; replace or remove it.")
         if scene.radius_warning:
             warnings.append(scene.radius_warning)
         if scene.skipped:

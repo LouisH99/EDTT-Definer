@@ -10,6 +10,7 @@ from edtt_definer.model import Position, SectionType
 from edtt_definer.parser import load_document, parse_text, save_document, serialize_document
 from edtt_definer.project import (
     AltitudeMode,
+    CourseMap,
     ProjectData,
     StageMetadata,
     apply_maximum_altitude,
@@ -103,6 +104,46 @@ def test_unchanged_round_trip_is_exact() -> None:
     assert serialize_document(document) == SAMPLE
 
 
+def test_course_map_project_round_trip(tmp_path) -> None:
+    project = ProjectData.new()
+    project.course_maps.append(CourseMap(
+        system="Sol", body="Earth", image_base64="aW1hZ2U=",
+        reference_latitude=1.0, reference_longitude=2.0,
+        corners=[(-100, 100), (100, 100), (100, -100), (-100, -100)],
+        opacity=0.4, visible=False, locked=True,
+    ))
+    path = tmp_path / "map.edtt"
+    save_project(project, path)
+    assert load_project(path).course_maps == project.course_maps
+    legacy = project.to_dict()
+    legacy["schema_version"] = 4
+    legacy.pop("course_maps")
+    assert ProjectData.from_dict(legacy).course_maps == []
+
+
+@pytest.mark.parametrize("corners", [[], [(float("nan"), 0)] * 4])
+def test_course_map_rejects_invalid_corners(corners) -> None:
+    data = CourseMap("Sol", "Earth", "", 0, 0, corners).to_dict()
+    with pytest.raises(ValueError, match="alignment"):
+        CourseMap.from_dict(data)
+
+
+def test_course_map_without_scale_defaults_to_original_size() -> None:
+    data = CourseMap("Sol", "Earth", "", 0, 0,
+                     [(-100, 100), (100, 100), (100, -100), (-100, -100)]).to_dict()
+    data.pop("scale_factor")
+    assert CourseMap.from_dict(data).scale_factor == 1.0
+
+
+@pytest.mark.parametrize("scale", [0, -1, float("nan"), float("inf")])
+def test_course_map_rejects_invalid_saved_scale(scale) -> None:
+    data = CourseMap("Sol", "Earth", "", 0, 0,
+                     [(-100, 100), (100, 100), (100, -100), (-100, -100)]).to_dict()
+    data["scale_factor"] = scale
+    with pytest.raises(ValueError, match="alignment"):
+        CourseMap.from_dict(data)
+
+
 def test_new_project_defaults_max_ship_size_and_altitude_modes() -> None:
     project = ProjectData.new()
 
@@ -159,7 +200,7 @@ def test_project_round_trip_preserves_ast_and_metadata(tmp_path: Path) -> None:
     path = tmp_path / "race.edttc.json"
     save_project(project, path)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     assert payload["time_trial_version"] == 1
     loaded = load_project(path)
     assert serialize_document(loaded.document) == SAMPLE

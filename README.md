@@ -87,6 +87,18 @@ The **Course view** tab shows Start, every valid point or gate, End, route lines
 
 The canvas uses a RaceViz-inspired dark presentation: Start is green, waypoints are yellow, End is blue, and selected checkpoints are light blue. Checkpoint volumes are translucent and retain their true gate width and 1:1 altitude scale. This presentation was adapted with the RaceViz author's explicit permission; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+### Course map images
+
+Course view supports one overhead map image per System/Body. Select a body with valid course coordinates and a positive `BodyRadius`, then use the folder icon in the **Map** row to import a PNG, JPEG, BMP, or WebP image. Importing fits the image and course with the image unlocked, preserving the camera's current orientation. Choose **Top** for a north-up top-down alignment view.
+
+While the image is unlocked, use the **Rotation** slider to rotate it around its center without stretching it or moving the camera. Positive angles turn clockwise in a north-up view; the angle measures the direction of the image's top edge relative to east. The slider covers -180 to +180 degrees in 0.1-degree steps. Use the **Scale** slider to shrink or enlarge the image uniformly around its center, from 10% to 400%; returning to 100% reverses the uniform scaling. Angle and percentage readouts update while dragging, and the alignment and scale setting are saved with the project. Neither slider moves the camera.
+
+Drag the four white corner handles to stretch, skew, or perspective-align the image with the checkpoints. Drag inside the image to move it as a whole. Right- or middle-drag still pans, and the wheel zooms the entire view rather than resizing the image. Use **Opacity** to compare imagery with the grid and checkpoints, then enable **Locked** to restore normal left-drag camera orbit and **Follow ship**. Unlock again to adjust the alignment. Visibility, lock, opacity, rotation, scale, and routine project/live refreshes preserve your chosen camera orientation. **Visible** hides the image without discarding it; the trash icon removes it after confirmation. Importing another image replaces the selected body's map after confirmation.
+
+The map remains attached to the ground plane when the camera moves and stays geographically anchored when waypoint edits change the course's local coordinate origin. **Fit** includes the visible image as well as the course. This is a flat reference image, not reconstructed terrain: relief and parallax in angled screenshots cannot always be corrected by four corners. Align against ground landmarks rather than elevated checkpoint centers.
+
+Images are embedded in the editable project, so the original image file is not needed when reopening or sharing it. Map changes mark the project as unsaved, but do not change EDCoPilot TXT output or trace files. Projects containing maps use schema version 5; older project schemas remain readable, but older EDTT Definer versions cannot open schema 5 projects. Import accepts images up to 32 MB and 40 million pixels; embedded PNG data can increase project size.
+
 ### Race-line recording
 
 The Course view can record the current vehicle path while Elite Dangerous is running:
