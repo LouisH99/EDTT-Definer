@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -21,7 +22,7 @@ from .model import (
 from .parser import atomic_write, save_document, serialize_document
 
 
-PROJECT_SCHEMA_VERSION = 4
+PROJECT_SCHEMA_VERSION = 5
 _VERSION_COMMENT_RE = re.compile(
     r"^\s*<!--\s*EDTTD:\s*Time-trial version\s+(\d+)\s+—\s+"
     r"Last saved\s+(.+?)\s*-->\s*$",
@@ -127,6 +128,67 @@ def apply_maximum_altitude(section: SectionNode, maximum_text: str) -> bool:
 
 
 @dataclass
+class CourseMap:
+    system: str
+    body: str
+    image_base64: str
+    reference_latitude: float
+    reference_longitude: float
+    corners: list[tuple[float, float]]
+    opacity: float = 0.65
+    visible: bool = True
+    locked: bool = False
+    scale_factor: float = 1.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "system": self.system,
+            "body": self.body,
+            "image_base64": self.image_base64,
+            "reference_latitude": self.reference_latitude,
+            "reference_longitude": self.reference_longitude,
+            "corners": [list(point) for point in self.corners],
+            "opacity": self.opacity,
+            "visible": self.visible,
+            "locked": self.locked,
+            "scale_factor": self.scale_factor,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CourseMap:
+        corners = [(float(east), float(north)) for east, north in data["corners"]]
+        latitude = float(data["reference_latitude"])
+        longitude = float(data["reference_longitude"])
+        opacity = float(data.get("opacity", 0.65))
+        scale_factor = float(data.get("scale_factor", 1.0))
+        if (
+            len(corners) != 4
+            or not all(math.isfinite(value) for point in corners for value in point)
+            or not math.isfinite(latitude)
+            or not math.isfinite(longitude)
+            or not -90 <= latitude <= 90
+            or not -180 <= longitude <= 180
+            or not math.isfinite(opacity)
+            or not 0 <= opacity <= 1
+            or not math.isfinite(scale_factor)
+            or scale_factor <= 0
+        ):
+            raise ValueError("Invalid course map alignment.")
+        return cls(
+            system=str(data["system"]),
+            body=str(data["body"]),
+            image_base64=str(data["image_base64"]),
+            reference_latitude=latitude,
+            reference_longitude=longitude,
+            corners=corners,
+            opacity=opacity,
+            visible=bool(data.get("visible", True)),
+            locked=bool(data.get("locked", False)),
+            scale_factor=scale_factor,
+        )
+
+
+@dataclass
 class ProjectData:
     document: EventDocument = field(default_factory=EventDocument.new)
     capture_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -134,6 +196,7 @@ class ProjectData:
     stage_metadata: dict[str, StageMetadata] = field(default_factory=dict)
     time_trial_version: int = 0
     last_saved_at: str | None = None
+    course_maps: list[CourseMap] = field(default_factory=list)
 
     @classmethod
     def new(cls) -> ProjectData:
@@ -164,12 +227,13 @@ class ProjectData:
             },
             "time_trial_version": self.time_trial_version,
             "last_saved_at": self.last_saved_at,
+            "course_maps": [course_map.to_dict() for course_map in self.course_maps],
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProjectData:
         version = data.get("schema_version")
-        if version not in {1, 2, 3, PROJECT_SCHEMA_VERSION}:
+        if version not in {1, 2, 3, 4, PROJECT_SCHEMA_VERSION}:
             raise ValueError(f"Unsupported project schema version: {version!r}")
         raw_stage_metadata = data.get("stage_metadata", {}) if version >= 2 else {}
         return cls(
@@ -187,6 +251,7 @@ class ProjectData:
             last_saved_at=(
                 normalize_saved_at(data.get("last_saved_at")) if version >= 4 else None
             ),
+            course_maps=[CourseMap.from_dict(item) for item in data.get("course_maps", [])],
         )
 
 

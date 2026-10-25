@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import math
+import base64
 from decimal import Decimal
 
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt
-from PySide6.QtGui import QCloseEvent, QMouseEvent
+from PySide6.QtGui import QColor, QCloseEvent, QImage, QMouseEvent
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice
 
-from edtt_definer.course_scene import Point3D, SceneState, build_course_scene
+from edtt_definer.course_scene import Point3D, SceneState, build_course_scene, unproject_coordinate
 from edtt_definer.course_view import CourseViewPanel
 from edtt_definer.live import LiveResult, LiveState, LocationSnapshot
-from edtt_definer.project import AltitudeMode, ProjectData, StageMetadata
+from edtt_definer.project import AltitudeMode, CourseMap, ProjectData, StageMetadata
 from edtt_definer.theme import ThemeMode, apply_theme
 from edtt_definer.trace import RaceTrace, TracePoint, TraceSegment, TraceState
 from edtt_definer.ui import MainWindow
@@ -63,6 +65,342 @@ def live_snapshot(
         flags=1 << 21,
         flag_has_lat_long=True,
     )
+
+
+def map_fixture(scene) -> CourseMap:
+    image = QImage(80, 80, QImage.Format.Format_RGB32)
+    image.fill(QColor("#d02030"))
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    assert image.save(buffer, "PNG")
+    return CourseMap("Demo System", "Demo A 1", base64.b64encode(bytes(data)).decode("ascii"),
+                     *scene.reference_coordinate,
+                     [(-2000, 2000), (2000, 2000), (2000, -2000), (-2000, -2000)])
+
+
+def test_map_renders_below_course_and_respects_visibility(qtbot) -> None:
+    panel = CourseViewPanel()
+    panel.resize(850, 700)
+    qtbot.addWidget(panel)
+    panel.show()
+    panel.set_project(visual_project())
+    canvas = panel.canvas
+    canvas.fit_view()
+    course_map = map_fixture(canvas.scene)
+    course_map.locked = True
+    course_map.opacity = 1
+    canvas.set_course_map(course_map)
+    image = canvas.grab().toImage()
+    samples = [QPoint(horizontal, vertical)
+               for horizontal in range(10, image.width() - 10, 13)
+               for vertical in range(10, image.height() - 10, 13)
+               if image.pixelColor(horizontal, vertical) == QColor("#d02030")]
+    assert len(samples) > 100
+    course_map.visible = False
+    assert canvas.grab().toImage().pixelColor(samples[0]) != QColor("#d02030")
+
+
+def test_map_corner_drag_moves_only_one_corner_and_rejects_crossing(qtbot) -> None:
+    panel = CourseViewPanel()
+    panel.resize(850, 700)
+    qtbot.addWidget(panel)
+    panel.set_project(visual_project())
+    canvas = panel.canvas
+    course_map = map_fixture(canvas.scene)
+    canvas.set_course_map(course_map)
+    canvas.top_view()
+    canvas.scale = 0.1
+    assert canvas.tilt_degrees == 0
+    original = list(course_map.corners)
+    canvas._map_drag_index = 0
+    canvas._drag_map(QPointF(20, 10))
+    assert course_map.corners[0] == pytest.approx((-1800, 1900), abs=1e-5)
+    for index in range(1, 4):
+        assert course_map.corners[index] == pytest.approx(original[index], abs=1e-5)
+    accepted = list(course_map.corners)
+    canvas._drag_map(QPointF(1000, 0))
+    assert course_map.corners == accepted
+
+
+def test_map_import_controls_and_project_reload(qtbot, tmp_path, monkeypatch) -> None:
+    panel = CourseViewPanel()
+    panel.resize(850, 700)
+    qtbot.addWidget(panel)
+    panel.show()
+    project = visual_project()
+    panel.set_project(project)
+    source = tmp_path / "map.png"
+    image = QImage(200, 100, QImage.Format.Format_RGB32)
+    image.fill(QColor("#20a060"))
+    assert image.save(str(source))
+    changes = []
+    panel.map_changed.connect(lambda: changes.append(True))
+    panel.import_map(source)
+    assert len(project.course_maps) == 1
+    assert panel.canvas.map_editing
+    assert panel.canvas.tilt_degrees == 45
+    assert not panel.follow_button.isEnabled()
+    assert panel.map_visible.isChecked()
+    panel.map_opacity.setValue(35)
+    assert project.course_maps[0].opacity == 0.35
+    panel.map_locked.setChecked(True)
+    assert not panel.canvas.map_editing
+    assert panel.follow_button.isEnabled()
+    panel.canvas.orbit_by(30, 45)
+    tilt_before_hiding = panel.canvas.tilt_degrees
+    panel.map_visible.setChecked(False)
+    assert not project.course_maps[0].visible
+    assert panel.canvas.tilt_degrees == tilt_before_hiding
+    reloaded = ProjectData.from_dict(project.to_dict())
+    panel.set_project(reloaded)
+    assert panel.canvas.course_map is reloaded.course_maps[0]
+    assert panel.map_opacity.value() == 35
+    assert not panel.map_visible.isChecked()
+    assert panel.map_locked.isChecked()
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    qtbot.mouseClick(panel.map_remove_button, Qt.MouseButton.LeftButton)
+    assert not reloaded.course_maps
+    assert panel.canvas.course_map is None
+    assert not panel.map_opacity.isEnabled()
+    assert len(changes) == 5
+
+
+def test_map_import_rejects_unreadable_image_and_missing_course(qtbot, tmp_path) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    source = tmp_path / "invalid.png"
+    source.write_bytes(b"not an image")
+    with pytest.raises(ValueError, match="body radius"):
+        panel.import_map(source)
+    panel.set_project(visual_project())
+    with pytest.raises(ValueError, match="readable image"):
+        panel.import_map(source)
+    assert panel.project.course_maps == []
+
+
+def test_map_mouse_drag_handles_translation_and_lock(qtbot) -> None:
+    panel = CourseViewPanel()
+    panel.resize(850, 700)
+    qtbot.addWidget(panel)
+    panel.show()
+    project = visual_project()
+    course_map = map_fixture(build_course_scene(project))
+    project.course_maps.append(course_map)
+    panel.set_project(project)
+    canvas = panel.canvas
+    canvas.top_view()
+    canvas.fit_view()
+    canvas.grab()
+    notifications = []
+    panel.map_changed.connect(lambda: notifications.append(True))
+    first = canvas._map_polygon()[0].toPoint()
+    original = list(course_map.corners)
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=first)
+    qtbot.mouseMove(canvas, first + QPoint(30, 15))
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=first + QPoint(30, 15))
+    assert course_map.corners[0] != original[0]
+    for index in range(1, 4):
+        assert course_map.corners[index] == pytest.approx(original[index], abs=1e-5)
+    assert notifications == [True]
+    original = list(course_map.corners)
+    center = canvas.world_to_screen(Point3D(0, 0, 0)).toPoint()
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=center)
+    qtbot.mouseMove(canvas, center + QPoint(15, 10))
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=center + QPoint(15, 10))
+    assert all(after != before for after, before in zip(course_map.corners, original))
+    assert len(notifications) == 2
+    panel.map_locked.setChecked(True)
+    original = list(course_map.corners)
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=center)
+    qtbot.mouseMove(canvas, center + QPoint(25, 20))
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=center + QPoint(25, 20))
+    assert course_map.corners == original
+    assert canvas.tilt_degrees > 0
+    assert len(notifications) == 3
+
+
+@pytest.mark.parametrize("locked", [False, True])
+def test_map_visibility_options_and_refresh_preserve_camera(qtbot, locked) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    project = visual_project()
+    course_map = map_fixture(build_course_scene(project))
+    course_map.locked = locked
+    course_map.visible = False
+    project.course_maps.append(course_map)
+    panel.set_project(project)
+    canvas = panel.canvas
+    canvas.fit_view()
+    canvas.orbit_by(73, 18)
+    canvas.roll_by(17)
+    canvas.pan_by_screen(QPointF(14, 9))
+    expected = (canvas.yaw_degrees, canvas.tilt_degrees, canvas.roll_degrees,
+                canvas.camera_target, canvas.pan, canvas.scale)
+    panel.map_visible.setChecked(True)
+    panel.map_opacity.setValue(42)
+    panel.map_locked.setChecked(not locked)
+    panel.refresh_project(project)
+    actual = (canvas.yaw_degrees, canvas.tilt_degrees, canvas.roll_degrees,
+              canvas.camera_target, canvas.pan, canvas.scale)
+    assert actual == expected
+
+
+@pytest.mark.parametrize("degrees", [90, -45, 180])
+def test_map_rotation_control_preserves_shape_camera_and_saved_alignment(qtbot, degrees) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    project = visual_project()
+    course_map = map_fixture(build_course_scene(project))
+    course_map.corners = [(-1200, 900), (1500, 900), (1100, -800), (-900, -600)]
+    project.course_maps.append(course_map)
+    panel.set_project(project)
+    canvas = panel.canvas
+    canvas.orbit_by(28, 12)
+    canvas.roll_by(11)
+    camera = (canvas.yaw_degrees, canvas.tilt_degrees, canvas.roll_degrees)
+    original = list(course_map.corners)
+    center_east = sum(point[0] for point in original) / 4
+    center_north = sum(point[1] for point in original) / 4
+    notifications = []
+    panel.map_changed.connect(lambda: notifications.append(True))
+    assert panel.map_rotation.isEnabled()
+    panel.map_rotation.setValue(degrees * 10)
+    cosine = math.cos(math.radians(degrees))
+    sine = math.sin(math.radians(degrees))
+    for (east, north), actual in zip(original, course_map.corners):
+        expected = (center_east + (east - center_east) * cosine + (north - center_north) * sine,
+                    center_north - (east - center_east) * sine + (north - center_north) * cosine)
+        assert actual == pytest.approx(expected)
+    assert (canvas.yaw_degrees, canvas.tilt_degrees, canvas.roll_degrees) == camera
+    assert notifications == [True]
+    saved = ProjectData.from_dict(project.to_dict())
+    assert saved.course_maps[0].corners == course_map.corners
+    panel.set_project(saved)
+    expected_angle = (degrees + 180) % 360 - 180
+    assert (panel.map_rotation.value() / 10 + 180) % 360 - 180 == pytest.approx(expected_angle)
+    panel.map_locked.setChecked(True)
+    assert not panel.map_rotation.isEnabled()
+    original = list(saved.course_maps[0].corners)
+    canvas.rotate_map(30)
+    assert saved.course_maps[0].corners == original
+
+
+@pytest.mark.parametrize("percentage", [10, 50, 150, 400])
+def test_map_scale_slider_preserves_center_shape_camera_and_saved_size(qtbot, percentage) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    project = visual_project()
+    course_map = map_fixture(build_course_scene(project))
+    course_map.corners = [(-1200, 900), (1500, 900), (1100, -800), (-900, -600)]
+    project.course_maps.append(course_map)
+    panel.set_project(project)
+    canvas = panel.canvas
+    canvas.fit_view()
+    canvas.orbit_by(28, 12)
+    canvas.roll_by(11)
+    original = list(course_map.corners)
+    center_east = sum(point[0] for point in original) / 4
+    center_north = sum(point[1] for point in original) / 4
+    camera = (canvas.yaw_degrees, canvas.tilt_degrees, canvas.roll_degrees,
+              canvas.camera_target, canvas.pan, canvas.scale)
+    notifications = []
+    panel.map_changed.connect(lambda: notifications.append(True))
+    assert panel.map_scale.isEnabled()
+    panel.map_scale.setValue(percentage)
+    for (east, north), actual in zip(original, course_map.corners):
+        expected = (center_east + (east - center_east) * percentage / 100,
+                    center_north + (north - center_north) * percentage / 100)
+        assert actual == pytest.approx(expected)
+    assert course_map.scale_factor == pytest.approx(percentage / 100)
+    assert panel.map_scale_label.text() == f"{percentage}%"
+    assert notifications == [True]
+    assert (canvas.yaw_degrees, canvas.tilt_degrees, canvas.roll_degrees,
+            canvas.camera_target, canvas.pan, canvas.scale) == camera
+    saved = ProjectData.from_dict(project.to_dict())
+    panel.set_project(saved)
+    assert panel.map_scale.value() == percentage
+    panel.map_scale.setValue(100)
+    for actual, expected in zip(saved.course_maps[0].corners, original):
+        assert actual == pytest.approx(expected)
+    panel.map_locked.setChecked(True)
+    assert not panel.map_scale.isEnabled()
+    original = list(saved.course_maps[0].corners)
+    canvas.scale_map(2)
+    assert saved.course_maps[0].corners == original
+
+
+@pytest.mark.parametrize("factor", [0, -1, float("nan"), float("inf")])
+def test_map_scale_rejects_invalid_factors(qtbot, factor) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    project = visual_project()
+    course_map = map_fixture(build_course_scene(project))
+    project.course_maps.append(course_map)
+    panel.set_project(project)
+    original = list(course_map.corners)
+    panel.canvas.scale_map(factor)
+    assert course_map.corners == original
+    assert course_map.scale_factor == 1
+
+
+def test_map_stays_geographically_anchored_after_course_edits(qtbot) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    project = visual_project()
+    course_map = map_fixture(build_course_scene(project))
+    project.course_maps.append(course_map)
+    panel.set_project(project)
+    old_reference = panel.canvas.scene.reference_coordinate
+    expected = [unproject_coordinate(east, north, *old_reference, panel.current_radius_km)
+                for east, north in course_map.corners]
+    project.document.end.section.set_value("Position", "0.04,0.03")
+    panel.refresh_project(project)
+    new_reference = panel.canvas.scene.reference_coordinate
+    assert old_reference != new_reference
+    for point, geographic in zip(panel.canvas.map_world_corners(), expected):
+        actual = unproject_coordinate(point.east_m, point.north_m, *new_reference, panel.current_radius_km)
+        assert actual == pytest.approx(geographic, abs=1e-8)
+
+
+def test_map_is_scoped_to_body_without_marking_switches_dirty(qtbot) -> None:
+    panel = CourseViewPanel()
+    qtbot.addWidget(panel)
+    project = visual_project()
+    course_map = map_fixture(build_course_scene(project))
+    project.course_maps.append(course_map)
+    remote = project.document.add_waypoint("ShipPass")
+    for key, value in (("System", "Other"), ("Body", "Other 1"),
+                       ("BodyRadius", "1000"), ("Position", "1,2"), ("Proximity", "50")):
+        remote.set_value(key, value)
+    notifications = []
+    panel.map_changed.connect(lambda: notifications.append(True))
+    panel.set_project(project)
+    assert panel.canvas.course_map is course_map
+    panel.body_selector.setCurrentIndex(1)
+    assert panel.canvas.course_map is None
+    assert not panel.map_locked.isEnabled()
+    panel.body_selector.setCurrentIndex(0)
+    assert panel.canvas.course_map is course_map
+    assert not notifications
+
+
+def test_map_changes_mark_main_window_dirty_without_changing_txt(qtbot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.project = visual_project()
+    window.course_view.set_project(window.project)
+    from edtt_definer.project import serialize_project_export
+    original = serialize_project_export(window.project)
+    window.dirty = False
+    window.project.course_maps.append(map_fixture(window.course_view.canvas.scene))
+    window.course_view.refresh_project(window.project)
+    assert not window.dirty
+    window.course_view.map_opacity.setValue(20)
+    assert window.dirty
+    assert serialize_project_export(window.project) == original
+    window.dirty = False
 
 
 def test_panel_starts_at_fitted_45_degree_overview_and_renders_course(qtbot) -> None:

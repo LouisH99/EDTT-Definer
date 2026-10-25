@@ -147,6 +147,7 @@ class CourseScene:
     trace_message: str = ""
     course_distance_m: float | None = None
     course_distance_message: str = ""
+    reference_coordinate: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -373,6 +374,32 @@ def project_coordinate(
         east = distance * math.sin(bearing)
         north = distance * math.cos(bearing)
     return Point3D(east, north, float(altitude_m))
+
+
+def unproject_coordinate(
+    east_m: float,
+    north_m: float,
+    reference_latitude: float,
+    reference_longitude: float,
+    radius_km: Decimal | float,
+) -> tuple[float, float]:
+    distance = math.hypot(east_m, north_m)
+    if distance < 1e-12:
+        return reference_latitude, reference_longitude
+    angular = distance / (float(radius_km) * 1000.0)
+    latitude = math.radians(reference_latitude)
+    longitude = math.radians(reference_longitude)
+    sine = math.sin(angular)
+    cosine = math.cos(angular)
+    result_latitude = math.asin(max(-1.0, min(1.0,
+        cosine * math.sin(latitude)
+        + north_m * sine * math.cos(latitude) / distance,
+    )))
+    result_longitude = longitude + math.atan2(
+        east_m * sine,
+        distance * math.cos(latitude) * cosine - north_m * math.sin(latitude) * sine,
+    )
+    return math.degrees(result_latitude), (math.degrees(result_longitude) + 180) % 360 - 180
 
 
 def _resolve_radius(
@@ -686,4 +713,5 @@ def build_course_scene(
         trace_message,
         course_distance_m,
         course_distance_message,
+        reference,
     )

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add one embedded overhead map image per System/Body beneath the Course view grid, checkpoints, and race lines.
+- Add top-down four-corner perspective alignment, whole-image dragging, opacity, visibility, locking, replacement, and removal controls. Locked images remain attached to the ground during normal camera movement.
+- Add map rotation and scale sliders with live angle and percentage readouts. Rotate the unlocked image around its center, or shrink/enlarge it from 10% to 400% without changing its proportions. Save the scale setting alongside the aligned corners, with existing maps defaulting to 100%.
+- Preserve camera orientation when importing, showing, unlocking, or adjusting maps and during routine scene refreshes; Top remains an explicit camera action.
+- Keep map alignment geographically anchored across waypoint edits, include visible maps in Fit, and save maps in editable-project schema version 5 while retaining compatibility with schemas 1-4. Map data is not exported to EDCoPilot TXT.
+
 ## v0.7.0 — 2026-10-02
 
 - Add optional aliases to Start and End alongside waypoint names, and show them consistently in the race structure and Course view.

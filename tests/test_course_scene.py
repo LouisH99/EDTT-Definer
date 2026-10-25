@@ -11,6 +11,7 @@ from edtt_definer.course_scene import (
     body_groups,
     build_course_scene,
     project_coordinate,
+    unproject_coordinate,
 )
 from edtt_definer.live import LocationSnapshot
 from edtt_definer.project import AltitudeMode, ProjectData, StageMetadata
@@ -102,6 +103,19 @@ def test_projection_is_antimeridian_safe_and_preserves_north_east_orientation() 
     assert abs(west_of_dateline.north_m) < 0.01
     assert north.north_m > 900
     assert abs(north.east_m) < 0.01
+
+
+@pytest.mark.parametrize("reference,target", [
+    ((0, 0), (0.01, -0.02)),
+    ((0, 179.999), (0.01, -179.999)),
+    ((89.9, 45), (89.91, 45.1)),
+    ((-89.9, -45), (-89.91, -45.1)),
+    ((12, 34), (12, 34)),
+])
+def test_projection_inverse_preserves_geographic_map_anchors(reference, target) -> None:
+    point = project_coordinate(*target, *reference, 5411.771)
+    result = unproject_coordinate(point.east_m, point.north_m, *reference, 5411.771)
+    assert result == pytest.approx(target, abs=1e-9)
 
 
 def test_projection_stays_finite_and_local_at_high_latitudes() -> None:

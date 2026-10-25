@@ -1690,6 +1690,7 @@ class MainWindow(QMainWindow):
         self.course_view.trace_clear_requested.connect(self.clear_trace)
         self.course_view.trace_open_requested.connect(self.open_trace)
         self.course_view.trace_save_requested.connect(self.save_trace)
+        self.course_view.map_changed.connect(self._course_map_changed)
         self.course_page_layout.addWidget(self.course_view, 1)
         self.course_placeholder = QWidget()
         placeholder_layout = QVBoxLayout(self.course_placeholder)
@@ -1998,6 +1999,11 @@ class MainWindow(QMainWindow):
         self._update_collapsible_validation(
             getattr(self, "validation_issues", validate_project(self.project))
         )
+
+    def _course_map_changed(self) -> None:
+        self.dirty = True
+        self.refresh_validation_and_preview()
+        self._update_title()
 
     def _document_changed(self) -> None:
         self._sync_current_stage_metadata()
